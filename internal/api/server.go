@@ -56,6 +56,10 @@ type Server struct {
 	// cfg holds the current server configuration.
 	cfg *config.Config
 
+	// aclConfig is the hot-reload-safe configuration snapshot read by the model
+	// ACL and rolling-cost middleware.
+	aclConfig atomic.Pointer[config.Config]
+
 	// oldConfigYaml stores a YAML snapshot of the previous configuration for change detection.
 	// This prevents issues when the config object is modified in place by Management API.
 	oldConfigYaml []byte
@@ -183,6 +187,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 	}
+	s.aclConfig.Store(cfg)
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
 	s.handlers.SetPluginHost(optionState.pluginHost)

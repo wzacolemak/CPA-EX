@@ -41,6 +41,26 @@ api-keys:
   - "your-api-key-2"
   - "your-api-key-3"
 
+# Optional per-key display names and model restrictions. Names are exposed to
+# management clients and can be synchronized to Usage Keeper aliases.
+# api-key-policies:
+#   - key: "your-api-key-1"
+#     name: "team-a"
+#     allowed-models:
+#       - "gpt-5.6-*"
+
+# Optional rolling 24-hour cost limits. Costs are read from a separately
+# deployed CPA Usage Keeper using its native range=24h aggregation.
+# daily-cost-quota:
+#   enabled: false
+#   keeper-base-url: "http://cpa-usage-keeper:8080"
+#   keeper-password-env: "CPA_USAGE_KEEPER_PASSWORD"
+#   refresh-seconds: 15
+#   fail-open: false
+#   limits:
+#     - key: "your-api-key-1"
+#       limit: 10.00
+
 # Enable debug logging
 debug: false
 

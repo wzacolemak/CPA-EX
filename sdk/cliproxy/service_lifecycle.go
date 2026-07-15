@@ -193,6 +193,10 @@ func (s *Service) Run(ctx context.Context) error {
 		if errStart := watcherWrapper.Start(watcherCtx); errStart != nil {
 			return fmt.Errorf("cliproxy: failed to start watcher: %w", errStart)
 		}
+		// A bind-mounted single file may change on the host without producing an
+		// in-container fsnotify event. The watcher hashes before reloading, so this
+		// lightweight poll only applies configurations whose content changed.
+		go pollConfigReload(watcherCtx, watcherWrapper)
 		log.Info("file watcher started for config and auth directory changes")
 		s.syncPluginModelRuntime(ctx)
 	}
@@ -212,6 +216,19 @@ func (s *Service) Run(ctx context.Context) error {
 		return ctx.Err()
 	case errServer := <-s.serverErr:
 		return errServer
+	}
+}
+
+func pollConfigReload(ctx context.Context, watcher *WatcherWrapper) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			watcher.ReloadConfigIfChanged()
+		}
 	}
 }
 

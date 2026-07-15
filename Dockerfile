@@ -25,6 +25,8 @@ RUN mkdir /CLIProxyAPI
 COPY --from=builder ./app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
 
 COPY config.example.yaml /CLIProxyAPI/config.example.yaml
+# Pinned management asset with this fork's API-key quota extension.
+COPY static/management.html /CLIProxyAPI/static/management.html
 
 WORKDIR /CLIProxyAPI
 

@@ -19,6 +19,7 @@ import (
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/models"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/client/grokbuild"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -57,10 +58,12 @@ func (s *Server) setupRoutes() {
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
 	s.codexLiveHandler = codexlive.NewHandler(s.handlers.AuthManager, s.cfg)
+	dailyCostQuota := DailyCostQuotaMiddleware(s.modelACLConfig)
+	modelACL := ModelACLMiddleware(s.modelACLConfig)
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
-	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(AuthMiddleware(s.accessManager), dailyCostQuota, modelACL)
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -100,7 +103,7 @@ func (s *Server) setupRoutes() {
 	s.engine.POST("/v1/realtime/calls/:call_id/refer", standardAuth, s.codexLiveHandler.HandleSIPControl)
 
 	openaiV1 := s.engine.Group("/openai/v1")
-	openaiV1.Use(AuthMiddleware(s.accessManager))
+	openaiV1.Use(AuthMiddleware(s.accessManager), dailyCostQuota, modelACL)
 	{
 		openaiV1.POST("/videos", openaiHandlers.VideosCreate)
 		openaiV1.GET("/videos/:video_id/content", openaiHandlers.VideosContent)
@@ -109,7 +112,7 @@ func (s *Server) setupRoutes() {
 
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
-	codexDirect.Use(AuthMiddleware(s.accessManager))
+	codexDirect.Use(AuthMiddleware(s.accessManager), dailyCostQuota, modelACL)
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
@@ -119,7 +122,7 @@ func (s *Server) setupRoutes() {
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
-	v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(AuthMiddleware(s.accessManager), dailyCostQuota, modelACL)
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
 		v1beta.POST("/interactions", geminiHandlers.Interactions)
@@ -588,7 +591,9 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 				s.handleHomeCodexClientModels(c)
 				return
 			}
-			openaiHandler.OpenAIModels(c)
+			models := filterModelsForAPIKey(s.modelACLConfig(), apiKeyFromContext(c), openaiHandler.Models())
+			optimizeMultiAgentV2 := s != nil && s.cfg != nil && s.cfg.Codex.OptimizeMultiAgentV2
+			c.JSON(http.StatusOK, codexmodels.BuildResponse(models, registry.GetGlobalRegistry().GetModelProviders, optimizeMultiAgentV2))
 			return
 		}
 
@@ -597,11 +602,27 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 			return
 		}
 
-		// Route to Claude handler for Anthropic API requests.
 		if isAnthropicModelsRequest(c) {
-			claudeHandler.ClaudeModels(c)
+			models := filterModelsForAPIKey(s.modelACLConfig(), apiKeyFromContext(c), claudeHandler.Models())
+			disableCloaking := s != nil && s.cfg != nil && s.cfg.ClaudeCode.DisableCloakingModelList
+			c.JSON(http.StatusOK, claudemodels.BuildResponse(models, disableCloaking))
 		} else {
-			openaiHandler.OpenAIModels(c)
+			models := filterModelsForAPIKey(s.modelACLConfig(), apiKeyFromContext(c), openaiHandler.Models())
+			filteredModels := make([]map[string]any, len(models))
+			for i, model := range models {
+				filteredModel := map[string]any{
+					"id":     model["id"],
+					"object": model["object"],
+				}
+				if created, exists := model["created"]; exists {
+					filteredModel["created"] = created
+				}
+				if ownedBy, exists := model["owned_by"]; exists {
+					filteredModel["owned_by"] = ownedBy
+				}
+				filteredModels[i] = filteredModel
+			}
+			c.JSON(http.StatusOK, gin.H{"object": "list", "data": filteredModels})
 		}
 	}
 }
@@ -691,8 +712,98 @@ func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin
 			return
 		}
 
-		geminiHandler.GeminiModels(c)
+		rawModels := filterModelsForAPIKey(s.modelACLConfig(), apiKeyFromContext(c), geminiHandler.Models())
+		normalizedModels := make([]map[string]any, 0, len(rawModels))
+		for _, model := range rawModels {
+			normalized := make(map[string]any, len(model))
+			for key, value := range model {
+				normalized[key] = value
+			}
+			if name, ok := normalized["name"].(string); ok && name != "" {
+				if !strings.HasPrefix(name, "models/") {
+					normalized["name"] = "models/" + name
+				}
+				if displayName, _ := normalized["displayName"].(string); displayName == "" {
+					normalized["displayName"] = name
+				}
+				if description, _ := normalized["description"].(string); description == "" {
+					normalized["description"] = name
+				}
+			}
+			if _, ok := normalized["supportedGenerationMethods"]; !ok {
+				normalized["supportedGenerationMethods"] = []string{"generateContent"}
+			}
+			normalizedModels = append(normalizedModels, normalized)
+		}
+		c.JSON(http.StatusOK, gin.H{"models": normalizedModels})
 	}
+}
+
+func (s *Server) modelACLConfig() *config.Config {
+	if s == nil {
+		return nil
+	}
+	if cfg := s.aclConfig.Load(); cfg != nil {
+		return cfg
+	}
+	return s.cfg
+}
+
+func apiKeyFromContext(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	raw, exists := c.Get("userApiKey")
+	if !exists {
+		return ""
+	}
+	apiKey, _ := raw.(string)
+	return strings.TrimSpace(apiKey)
+}
+
+func filterModelsForAPIKey(cfg *config.Config, apiKey string, models []map[string]any) []map[string]any {
+	apiKey = strings.TrimSpace(apiKey)
+	if cfg == nil || apiKey == "" {
+		return models
+	}
+	filtered := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		if ids := modelPolicyIDs(model); len(ids) == 0 || isAnyModelAllowedForKey(cfg, apiKey, ids) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
+}
+
+func isAnyModelAllowedForKey(cfg *config.Config, apiKey string, modelIDs []string) bool {
+	for _, modelID := range modelIDs {
+		if cfg.IsModelAllowedForKey(apiKey, modelID) {
+			return true
+		}
+	}
+	return false
+}
+
+func modelPolicyIDs(model map[string]any) []string {
+	ids := make([]string, 0, 2)
+	for _, field := range []string{"id", "name"} {
+		value, ok := model[field].(string)
+		value = strings.TrimSpace(strings.TrimPrefix(value, "models/"))
+		if !ok || value == "" {
+			continue
+		}
+		seen := false
+		for _, id := range ids {
+			if id == value {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			ids = append(ids, value)
+		}
+	}
+	return ids
 }
 
 func (s *Server) geminiGetHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {

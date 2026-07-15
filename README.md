@@ -119,6 +119,27 @@ PackyCode provides special discounts for our software users: register using <a h
 
 ## Overview
 
+## Local gateway extensions
+
+This fork adds gateway controls intended for self-hosted deployments:
+
+- Per-client API-key model allowlists, including filtered model-list responses.
+- Configurable request-body inspection limits for restricted API keys; unrestricted keys bypass model inspection.
+- Per-client rolling 24-hour cost limits backed by [CPA Usage Keeper](https://github.com/Willxup/cpa-usage-keeper)'s native `range=24h` aggregation, with configurable refresh and fail-open behavior.
+- API-key display names plus a management API for synchronizing aliases with CPA Usage Keeper.
+- A quota editor integrated into the CPA management panel's API-key settings. It reuses the panel's authenticated management session and does not expose Keeper credentials to the browser.
+- A polling fallback for config hot reload when a single-file Docker bind mount does not emit filesystem events.
+
+No production configuration, credentials, authentication files, logs, Usage Keeper data, or local-agent state is included in this repository. Start from `config.example.yaml` and provide secrets through your deployment environment.
+
+## License and attribution
+
+This fork is released under the [MIT License](LICENSE), retaining the upstream copyright and license notice.
+
+- Based on [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI).
+- Integrates with [Willxup/cpa-usage-keeper](https://github.com/Willxup/cpa-usage-keeper) for usage and rolling-cost data; it is deployed separately and is not bundled with this repository.
+- The pinned management-panel asset originates from [Cli-Proxy-API-Management-Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) and is extended here only to configure the fork-specific quota feature.
+
 - OpenAI/Gemini/Claude/Grok compatible API endpoints for CLI models
 - OpenAI Codex support (GPT models) via OAuth login
 - Claude Code support via OAuth login

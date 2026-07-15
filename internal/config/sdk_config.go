@@ -4,6 +4,47 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
+import (
+	"path"
+	"strings"
+)
+
+const (
+	// APIKeyDefaultPolicyAllowAll permits every model for keys without an explicit
+	// model policy. It is the backward-compatible default.
+	APIKeyDefaultPolicyAllowAll = "allow-all"
+
+	// APIKeyDefaultPolicyDenyAll denies every model for keys without an explicit
+	// model policy.
+	APIKeyDefaultPolicyDenyAll = "deny-all"
+)
+
+// APIKeyPolicy limits a client key to the listed path.Match-style model globs.
+type APIKeyPolicy struct {
+	Key           string   `yaml:"key" json:"key"`
+	Name          string   `yaml:"name,omitempty" json:"name,omitempty"`
+	AllowedModels []string `yaml:"allowed-models,omitempty" json:"allowedModels,omitempty"`
+}
+
+// DailyCostQuotaConfig controls daily billing limits backed by Usage Keeper's
+// calculated rolling-24-hour summary.total_cost for each client API key.
+type DailyCostQuotaConfig struct {
+	Enabled           bool                  `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	KeeperBaseURL     string                `yaml:"keeper-base-url,omitempty" json:"keeper-base-url,omitempty"`
+	KeeperPassword    string                `yaml:"keeper-password,omitempty" json:"-"`
+	KeeperPasswordEnv string                `yaml:"keeper-password-env,omitempty" json:"-"`
+	RefreshSeconds    int                   `yaml:"refresh-seconds,omitempty" json:"refresh-seconds,omitempty"`
+	FailOpen          bool                  `yaml:"fail-open,omitempty" json:"fail-open,omitempty"`
+	Limits            []DailyCostQuotaLimit `yaml:"limits,omitempty" json:"limits,omitempty"`
+}
+
+// DailyCostQuotaLimit gives one client key a rolling-24-hour maximum amount in
+// the same currency/unit used by Usage Keeper's summary.total_cost.
+type DailyCostQuotaLimit struct {
+	Key   string  `yaml:"key" json:"key"`
+	Limit float64 `yaml:"limit" json:"limit"`
+}
+
 // SDKConfig represents the application's configuration, loaded from a YAML file.
 type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
@@ -51,6 +92,21 @@ type SDKConfig struct {
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
 
+	// APIKeyPolicies optionally limits individual client keys to model globs.
+	APIKeyPolicies []APIKeyPolicy `yaml:"api-key-policies,omitempty" json:"api-key-policies,omitempty"`
+
+	// APIKeyDefaultPolicy controls keys without a non-empty policy. Empty and
+	// "allow-all" are equivalent; "deny-all" requires an explicit allowlist.
+	APIKeyDefaultPolicy string `yaml:"api-key-default-policy,omitempty" json:"api-key-default-policy,omitempty"`
+
+	// ModelACLMaxBodySizeMB limits the body buffered to identify a model for a
+	// restricted key. Zero uses the secure 10 MiB default.
+	ModelACLMaxBodySizeMB int `yaml:"model-acl-max-body-size-mb,omitempty" json:"model-acl-max-body-size-mb,omitempty"`
+
+	// DailyCostQuota enables per-client-key rolling-24-hour limits using CPA
+	// Usage Keeper cost data.
+	DailyCostQuota DailyCostQuotaConfig `yaml:"daily-cost-quota,omitempty" json:"daily-cost-quota,omitempty"`
+
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`
@@ -61,6 +117,53 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+}
+
+// IsModelAllowedForKey reports whether key may access model according to its
+// configured allowlist and default policy.
+func (c *SDKConfig) IsModelAllowedForKey(key, model string) bool {
+	if c == nil {
+		return true
+	}
+	policy, hasPolicy := c.APIKeyPolicyForKey(key)
+	if !hasPolicy || len(policy.AllowedModels) == 0 {
+		return !strings.EqualFold(strings.TrimSpace(c.APIKeyDefaultPolicy), APIKeyDefaultPolicyDenyAll)
+	}
+
+	candidate := model
+	if idx := strings.Index(candidate, "/"); idx >= 0 && idx < len(candidate)-1 {
+		candidate = candidate[idx+1:]
+	}
+	for _, pattern := range policy.AllowedModels {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if pattern == candidate {
+			return true
+		}
+		if matched, err := path.Match(pattern, candidate); err == nil && matched {
+			return true
+		}
+		if matched, err := path.Match(pattern, model); err == nil && matched {
+			return true
+		}
+	}
+	return false
+}
+
+// APIKeyPolicyForKey returns the configured policy for key.
+func (c *SDKConfig) APIKeyPolicyForKey(key string) (APIKeyPolicy, bool) {
+	if c == nil {
+		return APIKeyPolicy{}, false
+	}
+	key = strings.TrimSpace(key)
+	for _, policy := range c.APIKeyPolicies {
+		if strings.TrimSpace(policy.Key) == key {
+			return policy, true
+		}
+	}
+	return APIKeyPolicy{}, false
 }
 
 // ClaudeCodeConfig configures Claude Code compatibility behavior.

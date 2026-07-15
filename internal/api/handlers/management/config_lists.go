@@ -143,7 +143,19 @@ func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after f
 }
 
 // api-keys
-func (h *Handler) GetAPIKeys(c *gin.Context) { c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys}) }
+func (h *Handler) GetAPIKeys(c *gin.Context) {
+	labels := make(map[string]string)
+	for _, policy := range h.cfg.APIKeyPolicies {
+		if key := strings.TrimSpace(policy.Key); key != "" {
+			labels[key] = strings.TrimSpace(policy.Name)
+		}
+	}
+	c.JSON(200, gin.H{
+		"api-keys":       h.cfg.APIKeys,
+		"api-key-labels": labels,
+		"api_key_labels": labels,
+	})
+}
 func (h *Handler) PutAPIKeys(c *gin.Context) {
 	h.putStringList(c, func(v []string) {
 		h.cfg.APIKeys = append([]string(nil), v...)
@@ -154,6 +166,50 @@ func (h *Handler) PatchAPIKeys(c *gin.Context) {
 }
 func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 	h.deleteFromStringList(c, &h.cfg.APIKeys, func() {})
+}
+
+// PutAPIKeyLabel updates the display name for one client API key without
+// changing its model allowlist. It is used by Usage Keeper alias sync as well
+// as management clients that need a small, targeted label update.
+func (h *Handler) PutAPIKeyLabel(c *gin.Context) {
+	var body struct {
+		Key  string `json:"key"`
+		Name string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	key := strings.TrimSpace(body.Key)
+	if key == "" {
+		c.JSON(400, gin.H{"error": "API key is required"})
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	found := false
+	for _, configured := range h.cfg.APIKeys {
+		if strings.TrimSpace(configured) == key {
+			found = true
+			break
+		}
+	}
+	if !found {
+		c.JSON(404, gin.H{"error": "API key not found"})
+		return
+	}
+	for i := range h.cfg.APIKeyPolicies {
+		if strings.TrimSpace(h.cfg.APIKeyPolicies[i].Key) == key {
+			h.cfg.APIKeyPolicies[i].Name = strings.TrimSpace(body.Name)
+			h.persistLocked(c)
+			return
+		}
+	}
+	if name := strings.TrimSpace(body.Name); name != "" {
+		h.cfg.APIKeyPolicies = append(h.cfg.APIKeyPolicies, config.APIKeyPolicy{Key: key, Name: name})
+	}
+	h.persistLocked(c)
 }
 
 // gemini-api-key: []GeminiKey
