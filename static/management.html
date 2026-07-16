@@ -463,5 +463,258 @@ $&`).replace(/(?:^|\n)([\t ].*)(?:([\n\t ]*)\n(?![\n\t ]))?/g,`$1$2`).replace(/\
         setTimeout(loadQuota, 500);
       })();
     </script>
+    <script>
+      (() => {
+        const panelID = 'cpa-usage-keeper-embedded';
+        const linkID = 'cpa-usage-keeper-nav-link';
+        const endpoint = '/v0/management/usage-keeper/embed-session';
+        const state = { managementKey: '' };
+        const text = value => String(value ?? '');
+
+        const style = document.createElement('style');
+        style.textContent = `
+          #${panelID}{box-sizing:border-box;flex:1;min-height:0;display:flex;flex-direction:column}
+          #${panelID} #uk-message{margin:8px 0;color:var(--text-secondary);font-size:13px}
+          #${panelID} iframe{flex:1;min-height:720px;width:100%;border:0;border-radius:0;background:transparent}
+          #${linkID}{cursor:pointer}@media(max-width:768px){#${panelID} iframe{min-height:calc(100vh - 130px)}}
+        `;
+        document.head.appendChild(style);
+
+        function capture(value) {
+          const match = /^Bearer\s+(.+)$/i.exec(text(value).trim());
+          if (match?.[1]) state.managementKey = match[1];
+        }
+        const setRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+        XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+          if (text(name).toLowerCase() === 'authorization') capture(value);
+          return setRequestHeader.apply(this, arguments);
+        };
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = function(input, init) {
+          const headers = init?.headers || (input instanceof Request ? input.headers : null);
+          if (headers instanceof Headers) capture(headers.get('Authorization'));
+          else if (Array.isArray(headers)) headers.forEach(([name, value]) => { if (text(name).toLowerCase() === 'authorization') capture(value); });
+          else if (headers) capture(headers.Authorization || headers.authorization);
+          return nativeFetch(input, init);
+        };
+
+        function panel() {
+          let node = document.getElementById(panelID);
+          if (node) return node;
+          node = document.createElement('section'); node.id = panelID;
+          node.innerHTML = '<p id="uk-message">正在加载…</p>';
+          return node;
+        }
+        function hide() {
+          const node = document.getElementById(panelID); if (!node) return;
+          const main = document.querySelector('main'); if (main) main.style.display = '';
+          const link = document.getElementById(linkID); if (link) { link.className = link.dataset.baseClass || link.className; link.removeAttribute('aria-current'); }
+          node.remove();
+        }
+        function activate(link) {
+          link = link || document.getElementById(linkID); if (!link) return;
+          document.querySelectorAll('a[aria-current="page"],button[aria-current="page"]').forEach(item => { item.classList.forEach(name => { if (/active|selected|current/i.test(name)) item.classList.remove(name); }); item.removeAttribute('aria-current'); });
+          link.className = link.dataset.activeClass || link.className;
+          link.setAttribute('aria-current', 'page');
+        }
+        async function show(event) {
+          event?.preventDefault();
+          const main = document.querySelector('main'); const host = main?.parentElement;
+          if (!main || !host) return;
+          const node = panel(); node.className = `${main.className} cpa-embedded-panel`; main.style.display = 'none'; host.appendChild(node); activate(event?.currentTarget);
+          const message = document.querySelector(`#${panelID} #uk-message`);
+          if (!state.managementKey) { message.textContent = '尚未获取管理会话；请刷新管理面板后重试。'; return; }
+          try {
+            const response = await nativeFetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${state.managementKey}` } });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.url) throw new Error(data.error || `HTTP ${response.status}`);
+            const frame = document.createElement('iframe'); frame.title = '数据统计'; frame.src = data.url;
+            frame.addEventListener('load', () => message.remove(), { once: true });
+            document.getElementById(panelID)?.appendChild(frame);
+          } catch (error) { message.textContent = `无法打开用量看板：${error.message}`; }
+        }
+        function mountLink() {
+          if (document.getElementById(linkID)) return;
+          // The bundled panel can run below a basename or a hash router, so
+          // do not rely on a single literal href. The existing Logs item is
+          // in the Observability group and is our stable insertion point.
+          const logs = [...document.querySelectorAll('a,button')].find(item => {
+            const href = item.getAttribute('href') || '';
+            const label = text(item.textContent).replace(/\s+/g, ' ').trim();
+            return /(?:^|[#/])logs(?:$|[?#/])/.test(href) || /^(logs|日志)$/i.test(label);
+          });
+          if (!logs || !logs.parentElement) return;
+          const link = logs.cloneNode(true); link.id = linkID; link.dataset.activeClass = link.className; link.classList.forEach(name => { if (/active|selected|current/i.test(name)) link.classList.remove(name); }); link.removeAttribute('aria-current'); link.dataset.baseClass = link.className; link.setAttribute('aria-label', '数据统计');
+          if (link.tagName === 'A') link.href = '#usage-keeper';
+          const labels = [...link.querySelectorAll('span')].filter(el => !el.querySelector('svg'));
+          if (labels.length) labels[0].textContent = '数据统计'; else link.textContent = '数据统计';
+          link.addEventListener('click', show); logs.parentElement.insertBefore(link, logs.nextSibling);
+        }
+        document.addEventListener('click', event => {
+          const link = event.target.closest('a');
+          if (link && link.id !== linkID) hide();
+        }, true);
+        new MutationObserver(mountLink).observe(document.documentElement, { childList: true, subtree: true });
+        mountLink();
+      })();
+    </script>
+    <script>
+      (() => {
+        const panelID = 'cpa-model-tester-embedded', linkID = 'cpa-model-tester-nav-link';
+        const endpoint = '/v0/management/model-tester/embed-session', state = { key: '' };
+        const text = value => String(value ?? '');
+        const style = document.createElement('style');
+        style.textContent = `#${panelID}{box-sizing:border-box;flex:1;min-height:0;display:flex;flex-direction:column}#${panelID} p{margin:8px 0;color:var(--text-secondary);font-size:13px}#${panelID} iframe{flex:1;min-height:720px;width:100%;border:0;background:transparent}@media(max-width:768px){#${panelID} iframe{min-height:calc(100vh - 130px)}}`;
+        document.head.appendChild(style);
+        const capture = value => { const match = /^Bearer\s+(.+)$/i.exec(text(value).trim()); if (match?.[1]) state.key = match[1]; };
+        const setRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+        XMLHttpRequest.prototype.setRequestHeader = function(name, value) { if (text(name).toLowerCase() === 'authorization') capture(value); return setRequestHeader.apply(this, arguments); };
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = function(input, init) { const headers = init?.headers || (input instanceof Request ? input.headers : null); if (headers instanceof Headers) capture(headers.get('Authorization')); else if (Array.isArray(headers)) headers.forEach(([name, value]) => { if (text(name).toLowerCase() === 'authorization') capture(value); }); else if (headers) capture(headers.Authorization || headers.authorization); return nativeFetch(input, init); };
+        function panel(main) { let node = document.getElementById(panelID); if (node) return node; node = document.createElement('section'); node.id = panelID; node.className = `${main.className} cpa-embedded-panel`; node.innerHTML = '<p>正在加载…</p>'; return node; }
+        function hide() { const node = document.getElementById(panelID); if (!node) return; const main = document.querySelector('main'); if (main) main.style.display = ''; const link = document.getElementById(linkID); if (link) { link.className = link.dataset.baseClass || link.className; link.removeAttribute('aria-current'); } node.remove(); }
+        function activate(link) { link = link || document.getElementById(linkID); if (!link) return; document.querySelectorAll('a[aria-current="page"],button[aria-current="page"]').forEach(item => { item.classList.forEach(name => { if (/active|selected|current/i.test(name)) item.classList.remove(name); }); item.removeAttribute('aria-current'); }); link.className = link.dataset.activeClass || link.className; link.setAttribute('aria-current', 'page'); }
+        function syncTheme(frame) { const source = getComputedStyle(document.documentElement), root = frame.contentDocument?.documentElement; if (!root) return; const map = { '--bg':'--bg-secondary', '--panel':'--bg-primary', '--panel2':'--bg-tertiary', '--border':'--border-color', '--text':'--text-primary', '--muted':'--text-secondary', '--accent':'--primary-color', '--accent-hover':'--primary-color', '--ok':'--success-color', '--err':'--error-color' }; Object.entries(map).forEach(([target, origin]) => { const value = source.getPropertyValue(origin).trim(); if (value) root.style.setProperty(target, value); }); root.style.colorScheme = source.colorScheme || ''; }
+        async function show(event) { event?.preventDefault(); const main = document.querySelector('main'), host = main?.parentElement; if (!main || !host) return; main.style.display = 'none'; const node = panel(main); host.appendChild(node); activate(event?.currentTarget); const message = node.querySelector('p'); if (!state.key) { message.textContent = '正在同步管理会话…'; setTimeout(() => show(), 800); return; } try { const response = await nativeFetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${state.key}` } }); const data = await response.json().catch(() => ({})); if (!response.ok || !data.url) throw new Error(data.error || `HTTP ${response.status}`); const frame = document.createElement('iframe'); frame.title = '模型测试'; frame.src = data.url; frame.addEventListener('load', () => { syncTheme(frame); message.remove(); new MutationObserver(() => syncTheme(frame)).observe(document.documentElement, { attributes:true, attributeFilter:['class','style','data-theme'] }); }, { once: true }); node.appendChild(frame); } catch (error) { message.textContent = `无法打开测试台：${error.message}`; } }
+        function mount() { if (document.getElementById(linkID)) return; const logs = [...document.querySelectorAll('a,button')].find(item => { const href = item.getAttribute('href') || '', label = text(item.textContent).replace(/\s+/g, ' ').trim(); return /(?:^|[#/])logs(?:$|[?#/])/.test(href) || /^(logs|日志)$/i.test(label); }); if (!logs?.parentElement) return; const anchor = document.getElementById('cpa-usage-keeper-nav-link') || logs; const link = logs.cloneNode(true); link.id = linkID; link.dataset.activeClass = link.className; link.classList.forEach(name => { if (/active|selected|current/i.test(name)) link.classList.remove(name); }); link.removeAttribute('aria-current'); link.dataset.baseClass = link.className; link.setAttribute('aria-label', '模型测试'); if (link.tagName === 'A') link.href = '#model-tester'; const labels = [...link.querySelectorAll('span')].filter(el => !el.querySelector('svg')); if (labels.length) labels[0].textContent = '模型测试'; else link.textContent = '模型测试'; link.addEventListener('click', show); anchor.parentElement.insertBefore(link, anchor.nextSibling); }
+        document.addEventListener('click', event => { const link = event.target.closest('a,button'); if (link && link.id !== linkID) hide(); }, true);
+        window.addEventListener('hashchange', () => { if (location.hash === '#model-tester') show(); });
+        new MutationObserver(mount).observe(document.documentElement, { childList: true, subtree: true }); mount(); if (location.hash === '#model-tester') setTimeout(() => show(), 700);
+      })();
+    </script>
+    <script>
+      (() => {
+        // Provider names are deliberately managed independently from routing
+        // identifiers (notably openai-compatibility.name).  The panel is kept
+        // as a small native extension so it remains available with upstream
+        // Management Center releases.
+        const panelID = 'cpa-provider-display-names';
+        const linkID = 'cpa-provider-display-names-nav-link';
+        const state = { managementKey: '', rows: [] };
+        const providers = [
+          { endpoint: '/v0/management/gemini-api-key', key: 'gemini-api-key', type: 'Gemini API Key', fallback: 'Gemini' },
+          { endpoint: '/v0/management/interactions-api-key', key: 'interactions-api-key', type: 'Gemini Interactions API Key', fallback: 'Gemini Interactions' },
+          { endpoint: '/v0/management/claude-api-key', key: 'claude-api-key', type: 'Claude API Key', fallback: 'Claude' },
+          { endpoint: '/v0/management/codex-api-key', key: 'codex-api-key', type: 'Codex API Key', fallback: 'Codex' },
+          { endpoint: '/v0/management/vertex-api-key', key: 'vertex-api-key', type: 'Vertex API Key', fallback: 'Vertex' },
+          { endpoint: '/v0/management/openai-compatibility', key: 'openai-compatibility', type: 'OpenAI Compatibility', fallback: 'OpenAI Compatible' },
+        ];
+        const text = value => String(value ?? '');
+        const hostFrom = value => {
+          try { return new URL(text(value)).host || ''; } catch { return ''; }
+        };
+        const authHeaders = () => ({ Authorization: `Bearer ${state.managementKey}`, 'Content-Type': 'application/json' });
+        const capture = value => {
+          const match = /^Bearer\s+(.+)$/i.exec(text(value).trim());
+          if (match?.[1]) state.managementKey = match[1];
+        };
+        const setRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+        XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+          if (text(name).toLowerCase() === 'authorization') capture(value);
+          return setRequestHeader.apply(this, arguments);
+        };
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = function(input, init) {
+          const headers = init?.headers || (input instanceof Request ? input.headers : null);
+          if (headers instanceof Headers) capture(headers.get('Authorization'));
+          else if (Array.isArray(headers)) headers.forEach(([name, value]) => { if (text(name).toLowerCase() === 'authorization') capture(value); });
+          else if (headers) capture(headers.Authorization || headers.authorization);
+          return nativeFetch(input, init);
+        };
+
+        const style = document.createElement('style');
+        style.textContent = `
+          #${panelID}{box-sizing:border-box;flex:1;min-height:0;padding:24px;overflow:auto;color:var(--text-primary,#e8edf5)}
+          #${panelID} .cpdn-shell{max-width:980px;margin:0 auto}
+          #${panelID} .cpdn-heading{display:flex;gap:16px;align-items:flex-start;justify-content:space-between;margin-bottom:18px}
+          #${panelID} h1{margin:0;font-size:24px;line-height:1.3}#${panelID} .cpdn-desc{margin:6px 0 0;color:var(--text-secondary,#a9b3c3);font-size:14px;line-height:1.55}
+          #${panelID} .cpdn-card{background:var(--bg-secondary,var(--bg-primary,#1d2430));border:1px solid var(--border-color,rgba(148,163,184,.24));border-radius:12px;overflow:hidden}
+          #${panelID} .cpdn-message{margin:0 0 14px;padding:10px 12px;border-radius:8px;font-size:13px;background:rgba(59,130,246,.12);color:var(--text-secondary,#a9b3c3)}
+          #${panelID} .cpdn-message.error{background:rgba(239,68,68,.13);color:#fca5a5}#${panelID} .cpdn-message.ok{background:rgba(34,197,94,.13);color:#86efac}
+          #${panelID} .cpdn-row{display:grid;grid-template-columns:minmax(185px,1fr) minmax(250px,1.4fr) auto;gap:16px;align-items:center;padding:15px 18px;border-top:1px solid var(--border-color,rgba(148,163,184,.2))}
+          #${panelID} .cpdn-row:first-child{border-top:0}#${panelID} .cpdn-type{font-weight:600;font-size:14px}#${panelID} .cpdn-meta{margin-top:4px;font-size:12px;color:var(--text-secondary,#a9b3c3)}
+          #${panelID} .cpdn-field label{display:block;margin-bottom:5px;font-size:12px;color:var(--text-secondary,#a9b3c3)}#${panelID} .cpdn-field input{box-sizing:border-box;width:100%;height:34px;padding:6px 9px;border:1px solid var(--border-color,rgba(148,163,184,.3));border-radius:7px;background:var(--bg-primary,#121821);color:var(--text-primary,#e8edf5)}
+          #${panelID} button{border:0;border-radius:7px;padding:8px 12px;background:var(--primary-color,#3b82f6);color:#fff;cursor:pointer;font:inherit;font-size:13px}#${panelID} button:disabled{cursor:wait;opacity:.6}#${panelID} .cpdn-refresh{background:var(--bg-tertiary,#293342);color:var(--text-primary,#e8edf5)}
+          #${panelID} .cpdn-empty{padding:32px;text-align:center;color:var(--text-secondary,#a9b3c3)}@media(max-width:720px){#${panelID}{padding:16px}#${panelID} .cpdn-heading{display:block}#${panelID} .cpdn-heading button{margin-top:12px}#${panelID} .cpdn-row{grid-template-columns:1fr;gap:9px}#${panelID} .cpdn-row button{width:100%}}
+        `;
+        document.head.appendChild(style);
+
+        function fallbackName(provider, item, index) {
+          if (provider.key === 'openai-compatibility') return text(item.name).trim() || `${provider.fallback} ${index + 1}`;
+          return item['display-name']?.trim() || `${provider.fallback}${index ? ` ${index + 1}` : ''}`;
+        }
+        function message(value, kind = '') {
+          const node = document.querySelector(`#${panelID} .cpdn-message`); if (!node) return;
+          node.textContent = value || ''; node.className = `cpdn-message ${kind}`.trim(); node.hidden = !value;
+        }
+        function hide() {
+          const panel = document.getElementById(panelID); if (!panel) return;
+          const main = document.querySelector('main'); if (main) main.style.display = '';
+          const link = document.getElementById(linkID); if (link) { link.className = link.dataset.baseClass || link.className; link.removeAttribute('aria-current'); }
+          panel.remove();
+        }
+        function activate(link) {
+          link = link || document.getElementById(linkID); if (!link) return;
+          document.querySelectorAll('a[aria-current="page"],button[aria-current="page"]').forEach(item => { item.classList.forEach(name => { if (/active|selected|current/i.test(name)) item.classList.remove(name); }); item.removeAttribute('aria-current'); });
+          link.className = link.dataset.activeClass || link.className; link.setAttribute('aria-current', 'page');
+        }
+        function panel(main) {
+          let node = document.getElementById(panelID); if (node) return node;
+          node = document.createElement('section'); node.id = panelID; node.className = `${main.className} cpa-provider-display-names`;
+          node.innerHTML = '<div class="cpdn-shell"><div class="cpdn-heading"><div><h1>渠道名称</h1><p class="cpdn-desc">为每个 AI Provider 设置仅用于管理、模型测试与数据统计的显示名称；不会修改路由标识、模型别名或 API 密钥。</p></div><button class="cpdn-refresh" type="button">刷新</button></div><p class="cpdn-message">正在加载渠道…</p><div class="cpdn-card"><div class="cpdn-empty">正在读取配置…</div></div></div>';
+          node.querySelector('.cpdn-refresh').addEventListener('click', load); return node;
+        }
+        function render() {
+          const card = document.querySelector(`#${panelID} .cpdn-card`); if (!card) return;
+          card.replaceChildren();
+          if (!state.rows.length) { card.innerHTML = '<div class="cpdn-empty">尚未配置 API Provider。</div>'; return; }
+          state.rows.forEach(row => {
+            const node = document.createElement('div'); node.className = 'cpdn-row';
+            const about = document.createElement('div'); const title = document.createElement('div'); title.className = 'cpdn-type'; title.textContent = row.type;
+            const meta = document.createElement('div'); meta.className = 'cpdn-meta'; meta.textContent = row.context || `当前默认显示：${row.fallback}`; about.append(title, meta);
+            const field = document.createElement('div'); field.className = 'cpdn-field'; const label = document.createElement('label'); label.textContent = '显示名称'; const input = document.createElement('input'); input.value = row.value; input.placeholder = `未设置（当前：${row.fallback}）`; input.maxLength = 120; label.append(input); field.append(label);
+            const save = document.createElement('button'); save.type = 'button'; save.textContent = '保存'; save.addEventListener('click', async () => {
+              save.disabled = true; const value = input.value.trim(); message('正在保存…');
+              try {
+                const response = await nativeFetch(row.endpoint, { method: 'PATCH', headers: authHeaders(), body: JSON.stringify({ index: row.index, value: { 'display-name': value } }) });
+                const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+                row.value = value; message(value ? '已保存，模型测试和数据统计会自动同步该名称。' : '已清除名称，展示将回退到原有默认值。', 'ok');
+              } catch (error) { message(`保存失败：${error.message}`, 'error'); } finally { save.disabled = false; }
+            });
+            node.append(about, field, save); card.append(node);
+          });
+        }
+        async function load() {
+          if (!state.managementKey) { message('正在同步管理会话，请稍候后重试。', 'error'); return; }
+          message('正在读取渠道配置…');
+          try {
+            const results = await Promise.all(providers.map(async provider => {
+              const response = await nativeFetch(provider.endpoint, { headers: authHeaders() }); const data = await response.json().catch(() => ({}));
+              if (!response.ok) throw new Error(`${provider.type}: ${data.error || `HTTP ${response.status}`}`);
+              return (data[provider.key] || []).map((item, index) => ({ endpoint: provider.endpoint, index, type: provider.type, value: text(item['display-name']).trim(), fallback: fallbackName(provider, item, index), context: hostFrom(item['base-url']) || (provider.key === 'openai-compatibility' ? text(item.name).trim() : '') }));
+            }));
+            state.rows = results.flat(); render(); message('');
+          } catch (error) { state.rows = []; render(); message(`无法读取渠道配置：${error.message}`, 'error'); }
+        }
+        function show(event) {
+          event?.preventDefault(); const main = document.querySelector('main'); const host = main?.parentElement; if (!main || !host) return;
+          main.style.display = 'none'; host.appendChild(panel(main)); activate(event?.currentTarget);
+          if (state.managementKey) load(); else setTimeout(() => { if (document.getElementById(panelID)) load(); }, 700);
+        }
+        function mount() {
+          if (document.getElementById(linkID)) return;
+          const anchor = [...document.querySelectorAll('a,button')].find(item => {
+            const href = item.getAttribute('href') || ''; const label = text(item.textContent).replace(/\s+/g, ' ').trim();
+            return /(?:^|[#/])(providers|api-keys)(?:$|[?#/])/i.test(href) || /^(providers|ai providers|提供商|渠道|api keys|api 密钥)$/i.test(label);
+          });
+          if (!anchor?.parentElement) return;
+          const link = anchor.cloneNode(true); link.id = linkID; link.dataset.activeClass = link.className; link.classList.forEach(name => { if (/active|selected|current/i.test(name)) link.classList.remove(name); }); link.removeAttribute('aria-current'); link.dataset.baseClass = link.className; link.setAttribute('aria-label', '渠道名称'); if (link.tagName === 'A') link.href = '#provider-display-names';
+          const labels = [...link.querySelectorAll('span')].filter(element => !element.querySelector('svg')); if (labels.length) labels[0].textContent = '渠道名称'; else link.textContent = '渠道名称'; link.addEventListener('click', show); anchor.parentElement.insertBefore(link, anchor.nextSibling);
+        }
+        document.addEventListener('click', event => { const link = event.target.closest('a,button'); if (link && link.id !== linkID) hide(); }, true);
+        window.addEventListener('hashchange', () => { if (location.hash === '#provider-display-names') show(); });
+        new MutationObserver(mount).observe(document.documentElement, { childList: true, subtree: true }); mount(); if (location.hash === '#provider-display-names') setTimeout(show, 700);
+      })();
+    </script>
   </body>
 </html>

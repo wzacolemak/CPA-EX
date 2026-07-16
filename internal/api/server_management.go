@@ -23,6 +23,12 @@ func (s *Server) registerManagementRoutes() {
 
 	s.engine.POST("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.PostOAuthCallback)
 	s.engine.GET("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
+	// Embedded companion services are exposed only through short-lived sessions
+	// issued by the authenticated management API.
+	s.engine.GET("/v0/usage-keeper", s.mgmt.ServeUsageKeeperEmbed)
+	s.engine.Any("/v0/usage-keeper/*path", s.mgmt.ServeUsageKeeperEmbed)
+	s.engine.GET("/v0/model-tester", s.mgmt.ServeModelTesterEmbed)
+	s.engine.Any("/v0/model-tester/*path", s.mgmt.ServeModelTesterEmbed)
 
 	mgmt := s.engine.Group("/v0/management")
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
@@ -32,6 +38,8 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
 		mgmt.GET("/daily-cost-quota", s.mgmt.GetDailyCostQuota)
 		mgmt.PUT("/daily-cost-quota", s.mgmt.PutDailyCostQuota)
+		mgmt.POST("/usage-keeper/embed-session", s.mgmt.CreateUsageKeeperEmbedSession)
+		mgmt.POST("/model-tester/embed-session", s.mgmt.CreateModelTesterEmbedSession)
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
 		mgmt.GET("/plugins", s.mgmt.ListPlugins)
 		mgmt.GET("/plugin-store", s.mgmt.ListPluginStore)

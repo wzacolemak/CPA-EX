@@ -60,6 +60,8 @@ type Handler struct {
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
 	pluginReleaseCacheMu    sync.Mutex
 	pluginReleaseCache      map[string]pluginReleaseCacheEntry
+	usageKeeperEmbedMu      sync.Mutex
+	usageKeeperEmbedTokens  map[string]time.Time
 }
 
 type configReloadSnapshot struct {
@@ -80,6 +82,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		tokenStore:          sdkAuth.GetTokenStore(),
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
+		usageKeeperEmbedTokens: make(map[string]time.Time),
 	}
 	h.startAttemptCleanup()
 	return h

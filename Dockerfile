@@ -1,3 +1,5 @@
+ARG RUNTIME_IMAGE=debian:bookworm
+
 FROM golang:1.26-bookworm AS builder
 
 WORKDIR /app
@@ -16,9 +18,15 @@ ARG BUILD_DATE=unknown
 
 RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
 
-FROM debian:bookworm
+FROM ${RUNTIME_IMAGE}
 
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN if command -v apt-get >/dev/null 2>&1; then \
+      apt-get update && apt-get install -y --no-install-recommends tzdata ca-certificates && rm -rf /var/lib/apt/lists/*; \
+    elif command -v apk >/dev/null 2>&1; then \
+      apk add --no-cache tzdata ca-certificates; \
+    else \
+      echo "unsupported runtime base image" >&2; exit 1; \
+    fi
 
 RUN mkdir /CLIProxyAPI
 

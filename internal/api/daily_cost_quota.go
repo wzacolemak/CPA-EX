@@ -131,10 +131,6 @@ func (q *dailyCostQuotaChecker) check(ctx context.Context, quota config.DailyCos
 	if password == "" && quota.KeeperPasswordEnv != "" {
 		password = strings.TrimSpace(os.Getenv(quota.KeeperPasswordEnv))
 	}
-	if password == "" {
-		return true, 0, limit, fmt.Errorf("usage keeper password is not configured")
-	}
-
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.resetIfConfigChanged(baseURL, password)
@@ -142,8 +138,12 @@ func (q *dailyCostQuotaChecker) check(ctx context.Context, quota config.DailyCos
 		return true, cached.used, limit, nil
 	}
 
-	if err := q.login(ctx); err != nil {
-		return true, 0, limit, err
+	// A Keeper deployed behind CPA's embedded management proxy has no separate
+	// login. Retain the optional password flow for compatible external Keepers.
+	if password != "" {
+		if err := q.login(ctx); err != nil {
+			return true, 0, limit, err
+		}
 	}
 	keyID, err := q.keyID(ctx, apiKey)
 	if err != nil {
