@@ -468,7 +468,10 @@ $&`).replace(/(?:^|\n)([\t ].*)(?:([\n\t ]*)\n(?![\n\t ]))?/g,`$1$2`).replace(/\
         const panelID = 'cpa-usage-keeper-embedded';
         const linkID = 'cpa-usage-keeper-nav-link';
         const endpoint = '/v0/management/usage-keeper/embed-session';
-        const state = { managementKey: '' };
+        // The management UI can re-render its navigation while an embed
+        // session request is in flight.  Keep this view single-instance so a
+        // second click/re-render cannot append a second dashboard iframe.
+        const state = { managementKey: '', opening: false, requestID: 0 };
         const text = value => String(value ?? '');
 
         const style = document.createElement('style');
@@ -507,6 +510,10 @@ $&`).replace(/(?:^|\n)([\t ].*)(?:([\n\t ]*)\n(?![\n\t ]))?/g,`$1$2`).replace(/\
         }
         function hide() {
           const node = document.getElementById(panelID); if (!node) return;
+          // Invalidate an in-flight request. Fetch cannot always be cancelled
+          // here, but its completion must not recreate a panel we just left.
+          state.requestID += 1;
+          state.opening = false;
           const main = document.querySelector('main'); if (main) main.style.display = '';
           const link = document.getElementById(linkID); if (link) { link.className = link.dataset.baseClass || link.className; link.removeAttribute('aria-current'); }
           node.remove();
@@ -522,16 +529,26 @@ $&`).replace(/(?:^|\n)([\t ].*)(?:([\n\t ]*)\n(?![\n\t ]))?/g,`$1$2`).replace(/\
           const main = document.querySelector('main'); const host = main?.parentElement;
           if (!main || !host) return;
           const node = panel(); node.className = `${main.className} cpa-embedded-panel`; main.style.display = 'none'; host.appendChild(node); activate(event?.currentTarget);
-          const message = document.querySelector(`#${panelID} #uk-message`);
+          // A repeated click or a navigation re-render must reuse the already
+          // loaded view instead of stacking another iframe below it.
+          if (node.querySelector('iframe') || state.opening) return;
+          const message = node.querySelector('#uk-message');
           if (!state.managementKey) { message.textContent = '尚未获取管理会话；请刷新管理面板后重试。'; return; }
+          state.opening = true;
+          const requestID = ++state.requestID;
           try {
             const response = await nativeFetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${state.managementKey}` } });
             const data = await response.json().catch(() => ({}));
             if (!response.ok || !data.url) throw new Error(data.error || `HTTP ${response.status}`);
+            if (requestID !== state.requestID || !document.getElementById(panelID)) return;
             const frame = document.createElement('iframe'); frame.title = '数据统计'; frame.src = data.url;
             frame.addEventListener('load', () => message.remove(), { once: true });
-            document.getElementById(panelID)?.appendChild(frame);
-          } catch (error) { message.textContent = `无法打开用量看板：${error.message}`; }
+            node.appendChild(frame);
+          } catch (error) {
+            if (requestID === state.requestID && document.getElementById(panelID)) message.textContent = `无法打开用量看板：${error.message}`;
+          } finally {
+            if (requestID === state.requestID) state.opening = false;
+          }
         }
         function mountLink() {
           if (document.getElementById(linkID)) return;
@@ -551,10 +568,22 @@ $&`).replace(/(?:^|\n)([\t ].*)(?:([\n\t ]*)\n(?![\n\t ]))?/g,`$1$2`).replace(/\
           link.addEventListener('click', show); logs.parentElement.insertBefore(link, logs.nextSibling);
         }
         document.addEventListener('click', event => {
-          const link = event.target.closest('a');
+          const link = event.target.closest('a,button');
           if (link && link.id !== linkID) hide();
         }, true);
-        new MutationObserver(mountLink).observe(document.documentElement, { childList: true, subtree: true });
+        // Some bundled-panel versions navigate with buttons or replace the
+        // <main> node directly.  If a new visible main appears, the embed is
+        // stale and must be removed before it can occupy a second half-page.
+        const reconcile = () => {
+          const node = document.getElementById(panelID);
+          const main = document.querySelector('main');
+          if (node && main && main.style.display !== 'none' && location.hash !== '#usage-keeper') hide();
+          mountLink();
+        };
+        new MutationObserver(reconcile).observe(document.documentElement, { childList: true, subtree: true });
+        window.addEventListener('hashchange', () => {
+          if (location.hash === '#usage-keeper') show(); else hide();
+        });
         mountLink();
       })();
     </script>
