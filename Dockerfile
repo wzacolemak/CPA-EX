@@ -33,7 +33,7 @@ RUN if command -v apt-get >/dev/null 2>&1; then \
       echo "unsupported runtime base image" >&2; exit 1; \
     fi
 
-RUN mkdir /CLIProxyAPI
+RUN mkdir -p /CLIProxyAPI
 
 COPY --from=builder ./app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
 
