@@ -2,6 +2,11 @@ ARG RUNTIME_IMAGE=debian:bookworm
 
 FROM golang:1.26-bookworm AS builder
 
+# Keep the official proxy as the default while allowing restricted networks to
+# select a reachable mirror with --build-arg GOPROXY=... .
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential git && rm -rf /var/lib/apt/lists/*
