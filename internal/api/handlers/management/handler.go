@@ -75,13 +75,13 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	envSecret = strings.TrimSpace(envSecret)
 
 	h := &Handler{
-		cfg:                 cfg,
-		configFilePath:      configFilePath,
-		failedAttempts:      make(map[string]*attemptInfo),
-		authManager:         manager,
-		tokenStore:          sdkAuth.GetTokenStore(),
-		allowRemoteOverride: envSecret != "",
-		envSecret:           envSecret,
+		cfg:                    cfg,
+		configFilePath:         configFilePath,
+		failedAttempts:         make(map[string]*attemptInfo),
+		authManager:            manager,
+		tokenStore:             sdkAuth.GetTokenStore(),
+		allowRemoteOverride:    envSecret != "",
+		envSecret:              envSecret,
 		usageKeeperEmbedTokens: make(map[string]time.Time),
 	}
 	h.startAttemptCleanup()
