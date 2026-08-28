@@ -1,6 +1,8 @@
 package management
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -63,5 +65,78 @@ func TestGetOpenAICompatIncludesDisableCooling(t *testing.T) {
 	}
 	if body.OpenAICompatibility[0].RequestRetry == nil || *body.OpenAICompatibility[0].RequestRetry != 0 {
 		t.Fatalf("expected request-retry to be present and 0, got %#v", body.OpenAICompatibility[0].RequestRetry)
+	}
+}
+
+func TestGetOpenAICompatKeepsAuthIndexForDisabledProviders(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	const (
+		baseURL = "https://api.duckcoding.ai/v1"
+		apiKey  = "test-key"
+	)
+	h := NewHandlerWithoutConfigFilePath(&config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{
+				Name:     "duck",
+				BaseURL:  baseURL,
+				Disabled: true,
+				APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+					{APIKey: apiKey},
+				},
+			},
+			{
+				Name:     "nokey",
+				BaseURL:  baseURL,
+				Disabled: true,
+			},
+		},
+	}, nil)
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/openai-compatibility", nil)
+	h.GetOpenAICompat(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		OpenAICompatibility []struct {
+			Name          string `json:"name"`
+			Disabled      bool   `json:"disabled"`
+			AuthIndex     string `json:"auth-index"`
+			APIKeyEntries []struct {
+				AuthIndex string `json:"auth-index"`
+			} `json:"api-key-entries"`
+		} `json:"openai-compatibility"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(body.OpenAICompatibility) != 2 {
+		t.Fatalf("expected 2 openai-compatibility entries, got %d", len(body.OpenAICompatibility))
+	}
+
+	duck := body.OpenAICompatibility[0]
+	if !duck.Disabled {
+		t.Fatalf("expected duck provider to stay disabled, got %#v", duck)
+	}
+	if len(duck.APIKeyEntries) != 1 || duck.APIKeyEntries[0].AuthIndex == "" {
+		t.Fatalf("expected disabled provider api-key entry to keep auth-index, got %#v", duck.APIKeyEntries)
+	}
+
+	// The fallback must match the auth manager index: sha256("openai-compatibility:"+baseURL+"+"+apiKey)[:8] hex.
+	seed := "openai-compatibility:" + baseURL + "+" + apiKey
+	sum := sha256.Sum256([]byte(seed))
+	want := hex.EncodeToString(sum[:8])
+	if got := duck.APIKeyEntries[0].AuthIndex; got != want {
+		t.Fatalf("auth-index = %q, want %q", got, want)
+	}
+
+	noKey := body.OpenAICompatibility[1]
+	if noKey.AuthIndex != "" {
+		t.Fatalf("expected no auth-index for entry without api key, got %q", noKey.AuthIndex)
 	}
 }

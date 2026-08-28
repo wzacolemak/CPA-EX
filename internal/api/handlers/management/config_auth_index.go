@@ -1,6 +1,8 @@
 package management
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -258,6 +260,20 @@ func (h *Handler) vertexCompatKeysWithAuthIndex() []vertexCompatKeyWithAuthIndex
 	return out
 }
 
+// stableOpenAICompatAuthIndex derives the auth index that the auth manager assigns to an
+// OpenAI-compatible API key credential (see sdk/cliproxy/auth stableAuthIndex and indexSeed).
+// Disabled providers get no live auth, so management responses fall back to this derivation
+// to keep identifying their usage source.
+func stableOpenAICompatAuthIndex(baseURL, apiKey string) string {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return ""
+	}
+	seed := "openai-compatibility:" + strings.TrimSpace(baseURL) + "+" + apiKey
+	sum := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(sum[:8])
+}
+
 func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAuthIndex {
 	if h == nil {
 		return nil
@@ -304,9 +320,13 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 			for j := range entry.APIKeyEntries {
 				apiKeyEntry := entry.APIKeyEntries[j]
 				id, _ := idGen.Next(idKind, apiKeyEntry.APIKey, entry.BaseURL, apiKeyEntry.ProxyURL)
+				authIndex := liveIndexByID[id]
+				if authIndex == "" {
+					authIndex = stableOpenAICompatAuthIndex(entry.BaseURL, apiKeyEntry.APIKey)
+				}
 				response.APIKeyEntries[j] = openAICompatibilityAPIKeyWithAuthIndex{
 					OpenAICompatibilityAPIKey: apiKeyEntry,
-					AuthIndex:                 liveIndexByID[id],
+					AuthIndex:                 authIndex,
 				}
 			}
 		}
