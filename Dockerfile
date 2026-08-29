@@ -26,7 +26,9 @@ RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.V
 FROM ${RUNTIME_IMAGE}
 
 RUN if command -v apt-get >/dev/null 2>&1; then \
-      apt-get update && apt-get install -y --no-install-recommends tzdata ca-certificates && rm -rf /var/lib/apt/lists/*; \
+      if [ ! -e /usr/share/zoneinfo/Asia/Shanghai ] || [ ! -e /etc/ssl/certs/ca-certificates.crt ]; then \
+        apt-get update && apt-get install -y --no-install-recommends tzdata ca-certificates && rm -rf /var/lib/apt/lists/*; \
+      fi; \
     elif command -v apk >/dev/null 2>&1; then \
       apk add --no-cache tzdata ca-certificates; \
     else \
