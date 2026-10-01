@@ -13,24 +13,24 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
-	claudemodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/claude/models"
-	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
-	codexmodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/models"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/client/grokbuild"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/claude"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/gemini"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/openai"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	managementHandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	claudemodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/claude/models"
+	codexlive "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/live"
+	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/client/grokbuild"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/gemini"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -186,6 +186,29 @@ func (s *Server) setupRoutes() {
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
 	})
+
+	devinCallbackHandler := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		code := strings.TrimSpace(c.Query("code"))
+		state := strings.TrimSpace(c.Query("state"))
+		errStr := strings.TrimSpace(c.Query("error"))
+		if errStr == "" {
+			errStr = strings.TrimSpace(c.Query("error_description"))
+		}
+		if code == "" && errStr == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "code or error is required"})
+			return
+		}
+		if _, errWrite := managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "devin", state, code, errStr); errWrite != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid or expired OAuth callback"})
+			return
+		}
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusOK, oauthCallbackSuccessHTML)
+	}
+
+	s.engine.GET("/callback", devinCallbackHandler)
+	s.engine.GET("/devin/callback", devinCallbackHandler)
 
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
 }
@@ -581,9 +604,10 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 				s.handleHomeCodexClientModels(c, clientVersion)
 				return
 			}
-			models := filterModelsForAPIKey(s.modelACLConfig(), apiKeyFromContext(c), openaiHandler.Models())
-			optimizeMultiAgentV2 := s != nil && s.cfg != nil && s.cfg.Codex.OptimizeMultiAgentV2
-			c.JSON(http.StatusOK, codexmodels.BuildResponse(models, registry.GetGlobalRegistry().GetModelProviders, optimizeMultiAgentV2))
+			if s.serveACLFilteredCodexModels(c, openaiHandler, clientVersion) {
+				return
+			}
+			openaiHandler.OpenAIModels(c)
 			return
 		}
 
@@ -592,27 +616,17 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 			return
 		}
 
+		// Route to Claude handler for Anthropic API requests.
 		if isAnthropicModelsRequest(c) {
-			models := filterModelsForAPIKey(s.modelACLConfig(), apiKeyFromContext(c), claudeHandler.Models())
-			disableCloaking := s != nil && s.cfg != nil && s.cfg.ClaudeCode.DisableCloakingModelList
-			c.JSON(http.StatusOK, claudemodels.BuildResponse(models, disableCloaking))
-		} else {
-			models := filterModelsForAPIKey(s.modelACLConfig(), apiKeyFromContext(c), openaiHandler.Models())
-			filteredModels := make([]map[string]any, len(models))
-			for i, model := range models {
-				filteredModel := map[string]any{
-					"id":     model["id"],
-					"object": model["object"],
-				}
-				if created, exists := model["created"]; exists {
-					filteredModel["created"] = created
-				}
-				if ownedBy, exists := model["owned_by"]; exists {
-					filteredModel["owned_by"] = ownedBy
-				}
-				filteredModels[i] = filteredModel
+			if s.serveACLFilteredClaudeModels(c, claudeHandler) {
+				return
 			}
-			c.JSON(http.StatusOK, gin.H{"object": "list", "data": filteredModels})
+			claudeHandler.ClaudeModels(c)
+		} else {
+			if s.serveACLFilteredOpenAIModels(c, openaiHandler) {
+				return
+			}
+			openaiHandler.OpenAIModels(c)
 		}
 	}
 }
@@ -659,7 +673,15 @@ func (s *Server) handleGrokModels(c *gin.Context) {
 	} else {
 		models = grokModelsFromRegistryInfos(registry.GetGlobalRegistry().GetAvailableModelInfos())
 	}
-	c.JSON(http.StatusOK, grokbuild.BuildResponse(models))
+	s.writeModelListResponse(c, "openai", grokbuild.BuildResponse(models))
+}
+
+func (s *Server) writeModelListResponse(c *gin.Context, sourceFormat string, payload any) {
+	if s != nil && s.handlers != nil {
+		s.handlers.WriteModelListResponse(c, sourceFormat, payload)
+		return
+	}
+	c.JSON(http.StatusOK, payload)
 }
 
 // handleHomeCodexClientModels builds the Codex client catalog from Home model IDs.
@@ -672,10 +694,30 @@ func (s *Server) handleHomeCodexClientModels(c *gin.Context, clientVersion strin
 
 	models := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
-		models = append(models, formatHomeCodexModel(entry))
+		models = append(models, formatHomeCodexModelWithSettings(entry, s.cfg))
 	}
 
-	c.JSON(http.StatusOK, codexmodels.BuildResponseForClient(models, nil, s.cfg.Codex.OptimizeMultiAgentV2, clientVersion))
+	var webSearchCapabilityForModel codexmodels.WebSearchCapabilityForModelFunc
+	if clientVersion == "cpa" {
+		webSearchCapabilityForModel = homeWebSearchCapabilityForModel(entries)
+	}
+	payload := codexmodels.BuildResponseForClientWithCPACapabilities(models, nil, webSearchCapabilityForModel, s.cfg.Codex.OptimizeMultiAgentV2, clientVersion)
+	body, errMarshal := codexmodels.MarshalCompact(payload)
+	if errMarshal != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errMarshal.Error()})
+		return
+	}
+	s.writeModelListResponse(c, "openai", body)
+}
+
+func homeWebSearchCapabilityForModel(entries []homeModelEntry) codexmodels.WebSearchCapabilityForModelFunc {
+	routesByID := make(map[string][]registry.NativeCapabilityRoute, len(entries))
+	for _, entry := range entries {
+		routesByID[entry.id] = append([]registry.NativeCapabilityRoute(nil), entry.nativeCapabilityRoutes...)
+	}
+	return func(id string) *bool {
+		return registry.ResolveResponsesWebSearchCapability(routesByID[strings.TrimSpace(id)])
+	}
 }
 
 func formatHomeCodexModel(entry homeModelEntry) map[string]any {
@@ -689,6 +731,12 @@ func formatHomeCodexModel(entry homeModelEntry) map[string]any {
 	if entry.ownedBy != "" {
 		model["owned_by"] = entry.ownedBy
 	}
+	for _, p := range entry.providers {
+		if strings.EqualFold(p, "devin") {
+			model["type"] = "devin"
+			break
+		}
+	}
 	if entry.displayName != "" {
 		model["display_name"] = entry.displayName
 		model["description"] = entry.displayName
@@ -696,11 +744,41 @@ func formatHomeCodexModel(entry homeModelEntry) map[string]any {
 	if entry.contextLength > 0 {
 		model["context_length"] = entry.contextLength
 	}
+	if entry.maxContextLength > 0 {
+		model["max_context_length"] = entry.maxContextLength
+	}
 	if entry.maxCompletionTokens > 0 {
 		model["max_completion_tokens"] = entry.maxCompletionTokens
 	}
 	if entry.thinking != nil {
 		model["thinking"] = entry.thinking
+	}
+	return model
+}
+
+func formatHomeCodexModelWithSettings(entry homeModelEntry, cfg *config.Config) map[string]any {
+	model := formatHomeCodexModel(entry)
+	if cfg == nil || len(cfg.OAuthSettings) == 0 {
+		return model
+	}
+	providers := append([]string(nil), entry.providers...)
+	sort.SliceStable(providers, func(i, j int) bool {
+		if strings.EqualFold(providers[i], "codex") {
+			return true
+		}
+		if strings.EqualFold(providers[j], "codex") {
+			return false
+		}
+		return strings.ToLower(providers[i]) < strings.ToLower(providers[j])
+	})
+	for _, p := range providers {
+		channel := strings.ToLower(strings.TrimSpace(p))
+		if channelSettings, okChannel := cfg.OAuthSettings[channel]; okChannel {
+			if setting := config.ResolveOAuthModelSetting(channelSettings, entry.id, "", ""); setting != nil && setting.MaxContextLength > 0 {
+				model["max_context_length"] = setting.MaxContextLength
+				break
+			}
+		}
 	}
 	return model
 }
@@ -712,98 +790,12 @@ func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin
 			return
 		}
 
-		rawModels := filterModelsForAPIKey(s.modelACLConfig(), apiKeyFromContext(c), geminiHandler.Models())
-		normalizedModels := make([]map[string]any, 0, len(rawModels))
-		for _, model := range rawModels {
-			normalized := make(map[string]any, len(model))
-			for key, value := range model {
-				normalized[key] = value
-			}
-			if name, ok := normalized["name"].(string); ok && name != "" {
-				if !strings.HasPrefix(name, "models/") {
-					normalized["name"] = "models/" + name
-				}
-				if displayName, _ := normalized["displayName"].(string); displayName == "" {
-					normalized["displayName"] = name
-				}
-				if description, _ := normalized["description"].(string); description == "" {
-					normalized["description"] = name
-				}
-			}
-			if _, ok := normalized["supportedGenerationMethods"]; !ok {
-				normalized["supportedGenerationMethods"] = []string{"generateContent"}
-			}
-			normalizedModels = append(normalizedModels, normalized)
+		if s.serveACLFilteredGeminiModels(c, geminiHandler) {
+			return
 		}
-		c.JSON(http.StatusOK, gin.H{"models": normalizedModels})
-	}
-}
 
-func (s *Server) modelACLConfig() *config.Config {
-	if s == nil {
-		return nil
+		geminiHandler.GeminiModels(c)
 	}
-	if cfg := s.aclConfig.Load(); cfg != nil {
-		return cfg
-	}
-	return s.cfg
-}
-
-func apiKeyFromContext(c *gin.Context) string {
-	if c == nil {
-		return ""
-	}
-	raw, exists := c.Get("userApiKey")
-	if !exists {
-		return ""
-	}
-	apiKey, _ := raw.(string)
-	return strings.TrimSpace(apiKey)
-}
-
-func filterModelsForAPIKey(cfg *config.Config, apiKey string, models []map[string]any) []map[string]any {
-	apiKey = strings.TrimSpace(apiKey)
-	if cfg == nil || apiKey == "" {
-		return models
-	}
-	filtered := make([]map[string]any, 0, len(models))
-	for _, model := range models {
-		if ids := modelPolicyIDs(model); len(ids) == 0 || isAnyModelAllowedForKey(cfg, apiKey, ids) {
-			filtered = append(filtered, model)
-		}
-	}
-	return filtered
-}
-
-func isAnyModelAllowedForKey(cfg *config.Config, apiKey string, modelIDs []string) bool {
-	for _, modelID := range modelIDs {
-		if cfg.IsModelAllowedForKey(apiKey, modelID) {
-			return true
-		}
-	}
-	return false
-}
-
-func modelPolicyIDs(model map[string]any) []string {
-	ids := make([]string, 0, 2)
-	for _, field := range []string{"id", "name"} {
-		value, ok := model[field].(string)
-		value = strings.TrimSpace(strings.TrimPrefix(value, "models/"))
-		if !ok || value == "" {
-			continue
-		}
-		seen := false
-		for _, id := range ids {
-			if id == value {
-				seen = true
-				break
-			}
-		}
-		if !seen {
-			ids = append(ids, value)
-		}
-	}
-	return ids
 }
 
 func (s *Server) geminiGetHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
@@ -818,13 +810,16 @@ func (s *Server) geminiGetHandler(geminiHandler *gemini.GeminiAPIHandler) gin.Ha
 }
 
 type homeModelEntry struct {
-	id                  string
-	created             int64
-	ownedBy             string
-	displayName         string
-	contextLength       int
-	maxCompletionTokens int
-	thinking            *registry.ThinkingSupport
+	id                     string
+	created                int64
+	ownedBy                string
+	displayName            string
+	contextLength          int
+	maxContextLength       int
+	maxCompletionTokens    int
+	thinking               *registry.ThinkingSupport
+	providers              []string
+	nativeCapabilityRoutes []registry.NativeCapabilityRoute
 }
 
 func (s *Server) handleHomeModels(c *gin.Context) {
@@ -837,7 +832,7 @@ func (s *Server) handleHomeModels(c *gin.Context) {
 
 	if isClaude {
 		disableCloaking := s.cfg != nil && s.cfg.ClaudeCode.DisableCloakingModelList
-		c.JSON(http.StatusOK, claudemodels.BuildResponse(formatHomeClaudeModels(entries), disableCloaking))
+		s.writeModelListResponse(c, "claude", claudemodels.BuildResponse(formatHomeClaudeModels(entries), disableCloaking))
 		return
 	}
 
@@ -855,7 +850,7 @@ func (s *Server) handleHomeModels(c *gin.Context) {
 		}
 		filtered = append(filtered, model)
 	}
-	c.JSON(http.StatusOK, gin.H{
+	s.writeModelListResponse(c, "openai", gin.H{
 		"object": "list",
 		"data":   filtered,
 	})
@@ -903,7 +898,7 @@ func (s *Server) handleHomeGeminiModels(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	s.writeModelListResponse(c, "gemini", gin.H{
 		"models": formatHomeGeminiModels(entries),
 	})
 }
@@ -1093,9 +1088,10 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 		return nil, fmt.Errorf("home models payload has no sections")
 	}
 
-	seen := make(map[string]struct{})
+	indexByID := make(map[string]int)
 	out := make([]homeModelEntry, 0, 256)
-	for _, models := range bySection {
+	for section, models := range bySection {
+		provider := strings.ToLower(strings.TrimSpace(section))
 		for _, model := range models {
 			id, _ := model["id"].(string)
 			id = strings.TrimSpace(id)
@@ -1107,10 +1103,16 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 			if id == "" {
 				continue
 			}
-			if _, ok := seen[id]; ok {
+			nativeCapabilities := homeModelNativeCapabilities(model)
+			route := registry.NativeCapabilityRoute{
+				Provider:           provider,
+				NativeCapabilities: nativeCapabilities,
+			}
+			if index, ok := indexByID[id]; ok {
+				out[index].providers = appendUniqueHomeProvider(out[index].providers, provider)
+				out[index].nativeCapabilityRoutes = append(out[index].nativeCapabilityRoutes, route)
 				continue
 			}
-			seen[id] = struct{}{}
 
 			ownedBy, _ := model["owned_by"].(string)
 			ownedBy = strings.TrimSpace(ownedBy)
@@ -1122,14 +1124,18 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 			}
 			thinking := homeModelThinkingSupport(model)
 
+			indexByID[id] = len(out)
 			out = append(out, homeModelEntry{
-				id:                  id,
-				created:             homeModelInt64Value(model, "created"),
-				ownedBy:             ownedBy,
-				displayName:         displayName,
-				contextLength:       int(homeModelInt64Value(model, "context_length", "contextLength", "inputTokenLimit", "max_input_tokens")),
-				maxCompletionTokens: int(homeModelInt64Value(model, "max_completion_tokens", "maxCompletionTokens", "outputTokenLimit", "max_tokens")),
-				thinking:            thinking,
+				id:                     id,
+				created:                homeModelInt64Value(model, "created"),
+				ownedBy:                ownedBy,
+				displayName:            displayName,
+				contextLength:          int(homeModelInt64Value(model, "context_length", "contextLength", "inputTokenLimit", "max_input_tokens")),
+				maxContextLength:       int(homeModelInt64Value(model, "max_context_length", "maxContextLength")),
+				maxCompletionTokens:    int(homeModelInt64Value(model, "max_completion_tokens", "maxCompletionTokens", "outputTokenLimit", "max_tokens")),
+				thinking:               thinking,
+				providers:              appendUniqueHomeProvider(nil, provider),
+				nativeCapabilityRoutes: []registry.NativeCapabilityRoute{route},
 			})
 		}
 	}
@@ -1139,6 +1145,30 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 		return nil, fmt.Errorf("home models payload contains no models")
 	}
 	return out, nil
+}
+
+func homeModelNativeCapabilities(model map[string]any) *registry.NativeCapabilities {
+	raw, ok := model["native_capabilities"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	webSearch, ok := raw["web_search"].(bool)
+	if !ok {
+		return &registry.NativeCapabilities{}
+	}
+	return &registry.NativeCapabilities{WebSearch: &webSearch}
+}
+
+func appendUniqueHomeProvider(providers []string, provider string) []string {
+	if provider == "" {
+		return providers
+	}
+	for _, existing := range providers {
+		if existing == provider {
+			return providers
+		}
+	}
+	return append(providers, provider)
 }
 
 func homeModelThinkingSupport(model map[string]any) *registry.ThinkingSupport {
@@ -1177,4 +1207,183 @@ func homeModelInt64Value(model map[string]any, keys ...string) int64 {
 		}
 	}
 	return 0
+}
+
+// modelACLConfig returns the hot-reload-safe config snapshot used by the model
+// ACL middleware and model-list filtering, falling back to the startup config.
+func (s *Server) modelACLConfig() *config.Config {
+	if s == nil {
+		return nil
+	}
+	if cfg := s.aclConfig.Load(); cfg != nil {
+		return cfg
+	}
+	return s.cfg
+}
+
+func apiKeyFromContext(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	raw, exists := c.Get("userApiKey")
+	if !exists {
+		return ""
+	}
+	apiKey, _ := raw.(string)
+	return strings.TrimSpace(apiKey)
+}
+
+// apiKeyIsModelRestricted reports whether the request's client key is bound to
+// model ACL policies that require filtering model lists.
+func (s *Server) apiKeyIsModelRestricted(c *gin.Context) bool {
+	cfg := s.modelACLConfig()
+	if cfg == nil {
+		return false
+	}
+	apiKey := apiKeyFromContext(c)
+	if apiKey == "" {
+		return false
+	}
+	return keyHasModelRestriction(cfg, apiKey)
+}
+
+func filterModelsForAPIKey(cfg *config.Config, apiKey string, models []map[string]any) []map[string]any {
+	apiKey = strings.TrimSpace(apiKey)
+	if cfg == nil || apiKey == "" {
+		return models
+	}
+	filtered := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		if ids := modelPolicyIDs(model); len(ids) == 0 || isAnyModelAllowedForKey(cfg, apiKey, ids) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
+}
+
+func modelPolicyIDs(model map[string]any) []string {
+	ids := make([]string, 0, 2)
+	for _, field := range []string{"id", "name"} {
+		value, ok := model[field].(string)
+		value = strings.TrimSpace(strings.TrimPrefix(value, "models/"))
+		if !ok || value == "" {
+			continue
+		}
+		seen := false
+		for _, id := range ids {
+			if id == value {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			ids = append(ids, value)
+		}
+	}
+	return ids
+}
+
+func isAnyModelAllowedForKey(cfg *config.Config, apiKey string, modelIDs []string) bool {
+	for _, modelID := range modelIDs {
+		if cfg.IsModelAllowedForKey(apiKey, modelID) {
+			return true
+		}
+	}
+	return false
+}
+
+// serveACLFilteredOpenAIModels writes an OpenAI-format model list filtered by
+// the caller key's ACL policies. It returns false when no filtering applies and
+// the upstream handler should run unchanged.
+func (s *Server) serveACLFilteredOpenAIModels(c *gin.Context, openaiHandler *openai.OpenAIAPIHandler) bool {
+	if !s.apiKeyIsModelRestricted(c) {
+		return false
+	}
+	models := filterModelsForAPIKey(s.modelACLConfig(), apiKeyFromContext(c), openaiHandler.Models())
+	filteredModels := make([]map[string]any, len(models))
+	for i, model := range models {
+		filteredModel := map[string]any{
+			"id":     model["id"],
+			"object": model["object"],
+		}
+		if created, exists := model["created"]; exists {
+			filteredModel["created"] = created
+		}
+		if ownedBy, exists := model["owned_by"]; exists {
+			filteredModel["owned_by"] = ownedBy
+		}
+		filteredModels[i] = filteredModel
+	}
+	openaiHandler.WriteModelListResponse(c, openaiHandler.HandlerType(), gin.H{
+		"object": "list",
+		"data":   filteredModels,
+	})
+	return true
+}
+
+// serveACLFilteredClaudeModels writes an Anthropic-format model list filtered
+// by the caller key's ACL policies.
+func (s *Server) serveACLFilteredClaudeModels(c *gin.Context, claudeHandler *claude.ClaudeCodeAPIHandler) bool {
+	if !s.apiKeyIsModelRestricted(c) {
+		return false
+	}
+	models := filterModelsForAPIKey(s.modelACLConfig(), apiKeyFromContext(c), claudeHandler.Models())
+	disableCloaking := s != nil && s.cfg != nil && s.cfg.ClaudeCode.DisableCloakingModelList
+	claudeHandler.WriteModelListResponse(c, claudeHandler.HandlerType(), claudemodels.BuildResponse(models, disableCloaking))
+	return true
+}
+
+// serveACLFilteredCodexModels filters the Codex client_version model list by
+// the caller key's ACL policies, mirroring the compact encoding the upstream
+// handler uses.
+func (s *Server) serveACLFilteredCodexModels(c *gin.Context, openaiHandler *openai.OpenAIAPIHandler, clientVersion string) bool {
+	if !s.apiKeyIsModelRestricted(c) {
+		return false
+	}
+	models := filterModelsForAPIKey(s.modelACLConfig(), apiKeyFromContext(c), openaiHandler.Models())
+	optimizeMultiAgentV2 := s != nil && s.cfg != nil && s.cfg.Codex.OptimizeMultiAgentV2
+	payload := codexmodels.BuildResponseForClient(models, registry.GetGlobalRegistry().GetModelProviders, optimizeMultiAgentV2, clientVersion)
+	body, errMarshal := codexmodels.MarshalCompact(payload)
+	if errMarshal != nil {
+		openaiHandler.WriteModelListResponse(c, openaiHandler.HandlerType(), payload)
+		return true
+	}
+	openaiHandler.WriteModelListResponse(c, openaiHandler.HandlerType(), body)
+	return true
+}
+
+// serveACLFilteredGeminiModels writes a Gemini-format model list filtered by
+// the caller key's ACL policies, keeping the upstream normalization.
+func (s *Server) serveACLFilteredGeminiModels(c *gin.Context, geminiHandler *gemini.GeminiAPIHandler) bool {
+	if !s.apiKeyIsModelRestricted(c) {
+		return false
+	}
+	rawModels := filterModelsForAPIKey(s.modelACLConfig(), apiKeyFromContext(c), geminiHandler.Models())
+	normalizedModels := make([]map[string]any, 0, len(rawModels))
+	defaultMethods := []string{"generateContent"}
+	for _, model := range rawModels {
+		normalizedModel := make(map[string]any, len(model))
+		for k, v := range model {
+			normalizedModel[k] = v
+		}
+		if name, ok := normalizedModel["name"].(string); ok && name != "" {
+			if !strings.HasPrefix(name, "models/") {
+				normalizedModel["name"] = "models/" + name
+			}
+			if displayName, _ := normalizedModel["displayName"].(string); displayName == "" {
+				normalizedModel["displayName"] = name
+			}
+			if description, _ := normalizedModel["description"].(string); description == "" {
+				normalizedModel["description"] = name
+			}
+		}
+		if _, ok := normalizedModel["supportedGenerationMethods"]; !ok {
+			normalizedModel["supportedGenerationMethods"] = defaultMethods
+		}
+		normalizedModels = append(normalizedModels, normalizedModel)
+	}
+	geminiHandler.WriteModelListResponse(c, geminiHandler.HandlerType(), gin.H{
+		"models": normalizedModels,
+	})
+	return true
 }
