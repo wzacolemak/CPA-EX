@@ -9,7 +9,6 @@ ENV GOPROXY=${GOPROXY}
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential git && rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum ./
 
@@ -25,15 +24,6 @@ RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.V
 
 FROM ${RUNTIME_IMAGE}
 
-RUN if command -v apt-get >/dev/null 2>&1; then \
-      if [ ! -e /usr/share/zoneinfo/Asia/Shanghai ] || [ ! -e /etc/ssl/certs/ca-certificates.crt ]; then \
-        apt-get update && apt-get install -y --no-install-recommends tzdata ca-certificates && rm -rf /var/lib/apt/lists/*; \
-      fi; \
-    elif command -v apk >/dev/null 2>&1; then \
-      apk add --no-cache tzdata ca-certificates; \
-    else \
-      echo "unsupported runtime base image" >&2; exit 1; \
-    fi
 
 RUN mkdir -p /CLIProxyAPI
 
