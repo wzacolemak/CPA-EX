@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -480,6 +481,22 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		if params.FinishReason != "" {
 			flushPendingToolInput()
 		}
+		// Content-filter terminal chunks (e.g. SAFETY with empty parts) must not
+		// surface as a silent empty 200: inject a visible refusal notice when the
+		// stream produced no semantic content, and let appendFinalEvents translate
+		// the finishReason to stop_reason "refusal".
+		if isAntigravityContentFilterFinishReason(params.FinishReason) && !params.HasSemanticContent {
+			if params.ResponseType != 0 {
+				appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
+				params.ResponseIndex++
+				params.ResponseType = 0
+			}
+			appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, params.ResponseIndex))
+			noticeData, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", antigravityRefusalNotice(params.FinishReason))
+			appendEvent("content_block_delta", string(noticeData))
+			params.ResponseType = 1
+			params.HasContent = true
+		}
 	}
 
 	if usageResult := gjson.GetBytes(rawJSON, "response.usageMetadata"); usageResult.Exists() {
@@ -602,8 +619,30 @@ func resolveStopReason(params *Params) string {
 	case "STOP", "FINISH_REASON_UNSPECIFIED", "UNKNOWN":
 		return "end_turn"
 	}
-
+	if isAntigravityContentFilterFinishReason(params.FinishReason) {
+		return "refusal"
+	}
 	return "end_turn"
+}
+
+// isAntigravityContentFilterFinishReason reports whether the upstream Gemini
+// finishReason means the response was blocked/filtered rather than completed.
+// Mapping these to "end_turn" hides upstream errors from clients (they see an
+// empty 200 response instead of a diagnosable refusal).
+func isAntigravityContentFilterFinishReason(reason string) bool {
+	switch strings.ToUpper(strings.TrimSpace(reason)) {
+	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY", "MALFORMED_RESPONSE", "MALFORMED_FUNCTION_CALL":
+		return true
+	default:
+		return false
+	}
+}
+
+// antigravityRefusalNotice builds the human-readable explanation injected as a
+// text block when upstream blocks the response, so clients never receive a
+// silent empty completion.
+func antigravityRefusalNotice(finishReason string) string {
+	return fmt.Sprintf("Upstream model response was blocked by the provider content filter (finishReason=%s); no model output was generated. Try rephrasing the request or trimming the context.", strings.ToUpper(strings.TrimSpace(finishReason)))
 }
 
 // ConvertAntigravityResponseToClaudeNonStream converts a non-streaming Antigravity response to a non-streaming Claude response.
@@ -820,11 +859,8 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	flushThinking()
 	flushText()
 
-	if len(blocks) > 0 {
-		responseJSON, _ = sjson.SetRawBytes(responseJSON, "content", translatorcommon.JoinRawArray(blocks))
-	}
-
 	stopReason := "end_turn"
+	refusalFinishReason := ""
 	if hasToolCall {
 		stopReason = "tool_use"
 	} else {
@@ -837,7 +873,21 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 			default:
 				stopReason = "end_turn"
 			}
+			if isAntigravityContentFilterFinishReason(finish.String()) {
+				stopReason = "refusal"
+				refusalFinishReason = finish.String()
+			}
 		}
+	}
+	// A filtered non-stream response with no visible content must still carry a
+	// human-readable explanation; otherwise clients see an empty completion.
+	if refusalFinishReason != "" && !hasSemanticContent {
+		if noticeBlock, errMarshal := json.Marshal(map[string]string{"type": "text", "text": antigravityRefusalNotice(refusalFinishReason)}); errMarshal == nil {
+			blocks = append(blocks, noticeBlock)
+		}
+	}
+	if len(blocks) > 0 {
+		responseJSON, _ = sjson.SetRawBytes(responseJSON, "content", translatorcommon.JoinRawArray(blocks))
 	}
 	responseJSON, _ = sjson.SetBytes(responseJSON, "stop_reason", stopReason)
 

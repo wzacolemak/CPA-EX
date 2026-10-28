@@ -184,6 +184,66 @@ func TestConvertAntigravityResponseToClaudeStream_WebSearchMessageStartOutputTok
 	}
 }
 
+func testSafetyBlockedAntigravityResponse() []byte {
+	// 线上真实失败样本 (logs/v1-messages-2026-10-28T162209-97d12864.log) :
+	// 上游 200 + finishReason:SAFETY + 空 text，输出 0 token。
+	return []byte(`{
+		"response": {
+			"candidates": [{
+				"content": {"role": "model", "parts": [{"text": ""}]},
+				"finishReason": "SAFETY"
+			}],
+			"usageMetadata": {"promptTokenCount": 54726, "totalTokenCount": 54726},
+			"modelVersion": "claude-opus-5-5-high",
+			"responseId": "req_vrtx_011CgUK1XR8bRqANktkH1MEG"
+		}
+	}`)
+}
+
+func TestConvertAntigravityResponseToClaudeStream_SafetyFinishReasonMapsToRefusal(t *testing.T) {
+	requestJSON := []byte(`{"model":"claude-opus-5-5-high","messages":[{"role":"user","content":"hi"}]}`)
+	responseJSON := testSafetyBlockedAntigravityResponse()
+
+	var param any
+	output := bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-opus-5-5-high", requestJSON, requestJSON, responseJSON, &param), nil)
+	output = append(output, bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-opus-5-5-high", requestJSON, requestJSON, []byte("[DONE]"), &param), nil)...)
+	outputText := string(output)
+
+	messageDelta := sseDataForEvent(t, outputText, "message_delta")
+	if got := gjson.Get(messageDelta, "delta.stop_reason").String(); got != "refusal" {
+		t.Fatalf("stop_reason = %q, want refusal (SAFETY must not degrade to end_turn): %s", got, messageDelta)
+	}
+	if got := gjson.Get(messageDelta, "usage.input_tokens").Int(); got != 54726 {
+		t.Fatalf("input_tokens = %d, want 54726: %s", got, messageDelta)
+	}
+	if got := gjson.Get(messageDelta, "usage.output_tokens").Int(); got != 0 {
+		t.Fatalf("output_tokens = %d, want 0: %s", got, messageDelta)
+	}
+	// 流必须正常收尾，客户端不能悬挂。
+	if !strings.Contains(outputText, "event: message_stop") {
+		t.Fatalf("message_stop missing; stream must still close normally:\n%s", outputText)
+	}
+}
+
+func TestConvertAntigravityResponseToClaudeNonStream_SafetyFinishReasonMapsToRefusal(t *testing.T) {
+	requestJSON := []byte(`{"model":"claude-opus-5-5-high","messages":[{"role":"user","content":"hi"}]}`)
+	output := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "claude-opus-5-5-high", requestJSON, requestJSON, testSafetyBlockedAntigravityResponse(), nil)
+
+	if got := gjson.GetBytes(output, "stop_reason").String(); got != "refusal" {
+		t.Fatalf("stop_reason = %q, want refusal: %s", got, output)
+	}
+	// 必须携带一段人类可读的拒绝说明，否则客户端只看到空响应。
+	var notice string
+	for _, block := range gjson.GetBytes(output, "content").Array() {
+		if block.Get("type").String() == "text" {
+			notice = block.Get("text").String()
+		}
+	}
+	if !strings.Contains(notice, "SAFETY") {
+		t.Fatalf("content text = %q, want a refusal notice mentioning upstream finishReason: %s", notice, output)
+	}
+}
+
 func TestConvertAntigravityResponseToClaudeNonStream_EmptyCandidateReturnsContentArray(t *testing.T) {
 	requestJSON := []byte(`{"model":"gemini-3-flash-agent"}`)
 	output := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "gemini-3-flash-agent", requestJSON, requestJSON, testEmptyAntigravityResponse(), nil)
