@@ -6,6 +6,7 @@ FROM golang:1.26-bookworm AS builder
 # select a reachable mirror with --build-arg GOPROXY=... .
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
+ENV GOTOOLCHAIN=auto
 
 WORKDIR /app
 

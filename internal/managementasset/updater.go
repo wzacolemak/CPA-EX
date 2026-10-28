@@ -106,6 +106,8 @@ func runAutoUpdater(ctx context.Context) {
 }
 
 func autoUpdateSkipReason(cfg *config.Config) (string, bool) {
+	// 本部署固定使用本地定制面板 (zcode-oauth 注入 + daily-cost 等), 禁止自动更新覆盖。
+	return "panel updates disabled on this deployment (pinned local panel)", true
 	if cfg == nil {
 		return "config not yet available", true
 	}

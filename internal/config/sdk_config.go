@@ -208,6 +208,8 @@ func (c *SDKConfig) APIKeyPolicyForKey(key string) (APIKeyPolicy, bool) {
 		}
 	}
 	return APIKeyPolicy{}, false
+}
+
 // TLSHandshakeTimeout returns the configured upstream TLS handshake bound
 // for requests using the shared uTLS client. A non-positive configured
 // value disables the bound and yields 0.
