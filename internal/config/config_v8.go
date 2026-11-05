@@ -77,6 +77,18 @@ func buildV8Paths() []configPath {
 		{"github-token", "server.github-token"},
 		{"tls", "server.tls"}, {"commercial-mode", "server.commercial-mode"}, {"discovery", "server.discovery"},
 		{"remote-management", "management"}, {"api-keys", "access.api-keys"},
+		// 本 fork 扩展：客户端 key 的名称与模型允许列表（ACL）、请求体上限、
+		// 近 24h 计费额度。这三个段由自定义功能引入，但早期漏登记到 v8 白名单，
+		// 导致每次保存配置都被 config_v8 当成“未识别段落”注释掉并丢到文件末尾归档
+		// （事故：11-04 15:26 与 23:34 两次丢失 api-key-policies / daily-cost-quota /
+		//  model-acl-max-body-size-mb，面板里的 key 名称与限额反复消失）。
+		// 必须保持在此白名单内，否则重启或任何一次配置保存都会再次丢失。
+		// 自标路径用同名顶层 key：这三个字段在 Go 侧是 SDK 根结构体成员，
+		// 并不在 access 下。
+		{"api-key-policies", "api-key-policies"},
+		{"api-key-default-policy", "api-key-default-policy"},
+		{"model-acl-max-body-size-mb", "model-acl-max-body-size-mb"},
+		{"daily-cost-quota", "daily-cost-quota"},
 		{"credential-concurrency", "credentials.concurrency"}, {"credential-in-flight", "credentials.in-flight"},
 		{"force-model-prefix", "routing.force-model-prefix"},
 		{"request-retry", "routing.retry.request-retry"}, {"max-retry-credentials", "routing.retry.max-retry-credentials"},
@@ -238,7 +250,35 @@ func deleteYAMLPath(root *yaml.Node, path string) bool {
 	return true
 }
 
+// v8CanonicalOnlySections 是本 fork 新增、只有 v8 位置、没有 legacy 同名的配置段。
+// 它们由 flattenV8 原样展平到顶层供 Config 反序列化，因此迁移阶段绝不能
+// 把它们当作“待迁移的 legacy 段落”删除。
+//
+// 历史事故：这三段当时被 legacyPath 误判为 legacy，迁移时 deleteYAMLPath 删掉了，
+// 而 copy 又因 current == old 已存在而不写回，导致配置被静默丢失——
+// 典型表现是面板里 API key 的名称与限额反复消失。
+var v8CanonicalOnlySections = map[string]bool{
+	"api-key-policies":           true,
+	"api-key-default-policy":     true,
+	"model-acl-max-body-size-mb": true,
+	"daily-cost-quota":           true,
+}
+
+// v8CanonicalOnlyPath 判断某个 legacy 路径（含叶子级路径）是否属于
+// 只有 v8 规范位置的段落。
+func v8CanonicalOnlyPath(path string) bool {
+	if v8CanonicalOnlySections[path] {
+		return true
+	}
+	section, _, _ := strings.Cut(path, ".")
+	return v8CanonicalOnlySections[section]
+}
+
 func legacyPath(root *yaml.Node, path string) *yaml.Node {
+	// 只有 v8 规范位置的段落没有 legacy 对应物，不参与迁移搬移。
+	if v8CanonicalOnlySections[path] {
+		return nil
+	}
 	node := yamlPath(root, path)
 	if path == "api-keys" && node != nil && node.Kind == yaml.MappingNode {
 		return nil
@@ -363,6 +403,13 @@ func flattenV8(node *yaml.Node) (*yaml.Node, error) {
 		deleteYAMLPath(root, "api-keys")
 	}
 	for _, path := range v8Paths {
+		// current == old 表示该段只有 v8 规范位置（本 fork 新增的 api-key-policies /
+		// daily-cost-quota 等），不存在 legacy 对应物。此时若走下面的
+		// copy→delete→set 流程，会先把原节点删掉、再因目标已被删而写不回去，
+		// 导致整段静默消失（历史事故：面板里 key 名称与限额反复丢失）。
+		if path.current == path.old {
+			continue
+		}
 		if value := yamlPath(root, path.current); value != nil {
 			copy := copyYAMLPathValue(root, path.current)
 			deleteYAMLPath(root, path.current)
@@ -521,6 +568,14 @@ func NormalizeConfigLayout(data []byte, migrate bool) ([]byte, bool, error) {
 		paths = append(paths, path)
 	}
 	for _, path := range paths {
+		// 只有 v8 规范位置、没有 legacy 对应物（old == current）的段落不参与搬移。
+		// 否则 copy→delete→set 会因目标与源同名而自毁：先删掉源节点，
+		// 再因 current 已在删除时消失而写不回去，整段静默丢失。
+		// 注意：v8StructPaths 里是叶子级路径（如 daily-cost-quota.enabled），
+		// 所以必须按前缀判断而不是只比顶层 key。
+		if path.old == path.current || v8CanonicalOnlyPath(path.old) {
+			continue
+		}
 		old := legacyPath(root, path.old)
 		if old == nil {
 			continue

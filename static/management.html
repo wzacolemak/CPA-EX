@@ -556,12 +556,12 @@ $&`).replace(/(?:^|\n)([\t ].*)(?:([\n\t ]*)\n(?![\n\t ]))?/g,`$1$2`).replace(/\
                 <span><span class="zu-opt-title">start plan（免费）· zcode 中转</span>
                 <div class="zu-opt-desc">OAuth JWT → zcode.z.ai 中转，套餐由服务端路由（活动加速卡期间部分模型可能被遮蔽）</div>
                 <div id="zu-relay-plans"></div></span></label>
-              <label class="zu-opt" id="zu-opt-direct"><input type="radio" name="zu-mode" value="bigmodel_direct">
-                <span><span class="zu-opt-title">Bigmodel（个人）· GLM Coding Max</span>
-                <div class="zu-opt-desc">订阅 API key → open.bigmodel.cn 直连，不经过中转的套餐路由</div>
-                <div id="zu-direct-plans"></div></span></label>
+              <label class="zu-opt" id="zu-opt-ultra"><input type="radio" name="zu-mode" value="ultra">
+                <span><span class="zu-opt-title">Ultra（个人 · 1.5x 额度）</span>
+                <div class="zu-opt-desc">长期 CodingPlan key → zcode.z.ai/api/v1/ultra/anthropic；官方 1.5x 配额口径，实测扣减 ≈0.67x 直连</div>
+                <div id="zu-ultra-plans"></div></span></label>
               <div class="zu-keyrow" id="zu-keyrow">
-                <label>Bigmodel API key（留空保留现有）</label>
+                <label>CodingPlan API key（留空保留现有）</label>
                 <input type="text" id="zu-key" placeholder="xxxxxx.yyyyyyyy" autocomplete="off">
               </div>
               <div class="zu-msg" id="zu-msg"></div>
@@ -572,7 +572,7 @@ $&`).replace(/(?:^|\n)([\t ].*)(?:([\n\t ]*)\n(?![\n\t ]))?/g,`$1$2`).replace(/\
           m.querySelector('.zu-x').addEventListener('click', closeModal);
           m.querySelector('#zu-cancel').addEventListener('click', closeModal);
           m.querySelectorAll('input[name=zu-mode]').forEach(r => r.addEventListener('change', () => {
-            m.querySelector('#zu-keyrow').style.display = m.querySelector('input[name=zu-mode]:checked').value === 'bigmodel_direct' ? '' : 'none';
+            m.querySelector('#zu-keyrow').style.display = m.querySelector('input[name=zu-mode]:checked').value === 'relay' ? 'none' : '';
           }));
           m.querySelector('#zu-save').addEventListener('click', saveSwitch);
           refreshModal();
@@ -593,11 +593,14 @@ $&`).replace(/(?:^|\n)([\t ].*)(?:([\n\t ]*)\n(?![\n\t ]))?/g,`$1$2`).replace(/\
           sub.innerHTML = `当前: <b>${esc(st.label || st.mode)}</b>${st.direct_key_set ? ' · Bigmodel key 已配置' : ' · Bigmodel key 未配置'}`;
           const lines = planLines(st);
           m.querySelector('#zu-relay-plans').innerHTML = lines.relay || '<div class="zu-planline">· 未检测到中转侧套餐</div>';
-          m.querySelector('#zu-direct-plans').innerHTML = lines.direct || '<div class="zu-planline">· 未检测到 Bigmodel 订阅</div>';
+          m.querySelector('#zu-ultra-plans').innerHTML = (st.direct_plans || []).map(p => {
+            const bits = [p.product ? `<b>${esc(p.product)}</b>` : '', p.status ? esc(p.status) : '', p.valid ? esc(p.valid) : ''].filter(Boolean);
+            return bits.length ? `<div class="zu-planline">· ${bits.join(' · ')}</div>` : '';
+          }).join('') || '<div class="zu-planline">· 未检测到 CodingPlan 订阅</div>';
           m.querySelector('#zu-opt-relay').classList.toggle('cur', st.mode === 'relay');
-          m.querySelector('#zu-opt-direct').classList.toggle('cur', st.mode === 'bigmodel_direct');
+          m.querySelector('#zu-opt-ultra').classList.toggle('cur', st.mode === 'ultra');
           m.querySelectorAll('input[name=zu-mode]').forEach(r => { r.checked = r.value === st.mode; });
-          m.querySelector('#zu-keyrow').style.display = st.mode === 'bigmodel_direct' ? '' : 'none';
+          m.querySelector('#zu-keyrow').style.display = st.mode === 'relay' ? 'none' : '';
         }
 
         function closeModal() {

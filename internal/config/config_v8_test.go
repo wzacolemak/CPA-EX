@@ -933,3 +933,53 @@ func TestV8SecretHashResolvesReferences(t *testing.T) {
 		})
 	}
 }
+
+// TestV8MigrationKeepsCustomAccessSections 回归：本 fork 自定义的三段
+// （key 名称/ACL、请求体上限、24h 计费额度）必须能在 v8 迁移中存活。
+//
+// 历史事故：这三段曾漏登记进 v8 白名单，每次保存配置都被当成“未识别段落”
+// 注释掉并归档到文件末尾，导致管理面板里的 API key 名称与限额反复消失
+// （2026-11-04 15:26 与 23:34 两次）。
+func TestV8MigrationKeepsCustomAccessSections(t *testing.T) {
+	raw := []byte(`access:
+    api-keys:
+        - sk-test-1
+api-key-policies:
+  - key: sk-test-1
+    name: lj
+  - key: sk-test-2
+    name: gh
+api-key-default-policy: allow-all
+model-acl-max-body-size-mb: 64
+daily-cost-quota:
+  enabled: true
+  keeper-base-url: "http://cpa-usage-keeper:8080/v0/usage-keeper"
+  refresh-seconds: 60
+`)
+	migrated, _, err := NormalizeConfigLayout(raw, true)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	migratedText := string(migrated)
+	for _, section := range []string{"api-key-policies", "api-key-default-policy", "model-acl-max-body-size-mb", "daily-cost-quota"} {
+		if strings.Contains(migratedText, "# "+section+":") {
+			t.Fatalf("section %q was commented out by v8 migration:\n%s", section, migratedText)
+		}
+	}
+	cfg, err := ParseConfigBytes(migrated)
+	if err != nil {
+		t.Fatalf("parse migrated: %v", err)
+	}
+	if len(cfg.APIKeyPolicies) != 2 {
+		t.Fatalf("api-key-policies lost: %+v", cfg.APIKeyPolicies)
+	}
+	if cfg.APIKeyPolicies[0].Name != "lj" || cfg.APIKeyPolicies[1].Name != "gh" {
+		t.Fatalf("policy names lost: %+v", cfg.APIKeyPolicies)
+	}
+	if cfg.ModelACLMaxBodySizeMB != 64 {
+		t.Fatalf("model-acl-max-body-size-mb lost: %d", cfg.ModelACLMaxBodySizeMB)
+	}
+	if !cfg.DailyCostQuota.Enabled || cfg.DailyCostQuota.RefreshSeconds != 60 {
+		t.Fatalf("daily-cost-quota lost: %+v", cfg.DailyCostQuota)
+	}
+}
