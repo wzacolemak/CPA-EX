@@ -552,8 +552,12 @@ $&`).replace(/(?:^|\n)([\t ].*)(?:([\n\t ]*)\n(?![\n\t ]))?/g,`$1$2`).replace(/\
             <div class="zu-dialog">
               <div class="zu-head"><span class="zu-title">zcode 套餐切换</span><button class="zu-x" type="button">×</button></div>
               <p class="zu-sub" id="zu-sub">检测套餐中…</p>
+              <label class="zu-opt" id="zu-opt-auto"><input type="radio" name="zu-mode" value="auto">
+                <span><span class="zu-opt-title">自动 · 优先体验套餐（relay，并发 1）</span>
+                <div class="zu-opt-desc">检测到 relay 体验套餐就用它跑它覆盖的模型（默认 glm-5.3 / glm-5.3-flash）；并发占满、套餐不可用或请求失败时自动回落正常渠道（Ultra），不排队不报错</div>
+                <div id="zu-auto-plans"></div></span></label>
               <label class="zu-opt" id="zu-opt-relay"><input type="radio" name="zu-mode" value="relay">
-                <span><span class="zu-opt-title">start plan（免费）· zcode 中转</span>
+                <span><span class="zu-opt-title">start plan（免费 · 体验套餐）· zcode 中转</span>
                 <div class="zu-opt-desc">OAuth JWT → zcode.z.ai 中转，套餐由服务端路由（活动加速卡期间部分模型可能被遮蔽）</div>
                 <div id="zu-relay-plans"></div></span></label>
               <label class="zu-opt" id="zu-opt-ultra"><input type="radio" name="zu-mode" value="ultra">
@@ -599,6 +603,21 @@ $&`).replace(/(?:^|\n)([\t ].*)(?:([\n\t ]*)\n(?![\n\t ]))?/g,`$1$2`).replace(/\
           }).join('') || '<div class="zu-planline">· 未检测到 CodingPlan 订阅</div>';
           m.querySelector('#zu-opt-relay').classList.toggle('cur', st.mode === 'relay');
           m.querySelector('#zu-opt-ultra').classList.toggle('cur', st.mode === 'ultra');
+          m.querySelector('#zu-opt-auto').classList.toggle('cur', st.mode === 'auto');
+          const trial = st.relay_trial;
+          const capacity = `${st.relay_inflight || 0}/${st.relay_max_concurrency || 1}`;
+          const fallback = st.fallback_label || st.fallback_mode || 'Ultra';
+          let autoLines = '';
+          if (trial) {
+            autoLines += trial.available
+              ? `<div class="zu-planline">✓ 体验套餐可用${trial.plans && trial.plans.length ? ' · ' + trial.plans.map(esc).join(' · ') : ''}</div>`
+              : `<div class="zu-planline">✕ 体验套餐不可用${trial.reason ? ' · ' + esc(trial.reason) : ''}</div>`;
+            if (trial.available && trial.models && trial.models.length) {
+              autoLines += `<div class="zu-planline">覆盖模型: ${trial.models.map(esc).join(', ')}${trial.default_models ? '（默认口径）' : ''}</div>`;
+            }
+          }
+          autoLines += `<div class="zu-planline">并发占用 ${esc(capacity)} · 超出回落 ${esc(fallback)}</div>`;
+          m.querySelector('#zu-auto-plans').innerHTML = autoLines;
           m.querySelectorAll('input[name=zu-mode]').forEach(r => { r.checked = r.value === st.mode; });
           m.querySelector('#zu-keyrow').style.display = st.mode === 'relay' ? 'none' : '';
         }
