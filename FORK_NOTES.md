@@ -108,3 +108,19 @@
    （input ≥ cache_read，total = input + output）。
 6. 管理面板可登录、认证文件页正常（复合层 md5 与镜像内一致）。
 7. 每日成本限额端点 `/v0/management/daily-cost-quota` 返回 enabled + limits。
+
+## 面板 v8 适配补丁（2026-11-07，static/management.html 两处中文件改动）
+
+背景：config 自 2026-10-28 起为 v8 布局（客户端 key 在 access.api-keys，顶层 api-keys 是上游渠道组），
+但上游面板的「API 密钥列表」区块只认 v7 顶层列表——显示为空，且在该区块保存会把顶层 api-keys
+写成字符串数组 = 清空全部上游渠道组（kc1 2026-11-07 21:46 渠道丢失事故的根因）。
+
+改动（压缩代码，标识符随上游构建变化，重放时按语义定位）：
+1. _P(e)（apiKeysText 加载）：最前面插入 access.api-keys 优先读取——
+   `let _a8=mP(e?.access)?.[`api-keys`];if(Array.isArray(_a8))return gP(_a8);`
+2. applyVisualChangesToYaml 的 api-keys 分支：`setIn([`api-keys`],e)` / `deleteIn([`api-keys`])`
+   全部改写为 `access`,`api-keys` 路径，不再触碰顶层 api-keys。
+
+部署配套（kc1）：docker-compose 挂载 ./management.html:/CLIProxyAPI/static/management.html
+（单文件 bind mount——host 侧修改必须原地写）；config.yaml management.disable-auto-update-panel: true
+（v8.0.58 起此开关已接线，updater.go:120）。上游面板更新时本补丁需重放。
