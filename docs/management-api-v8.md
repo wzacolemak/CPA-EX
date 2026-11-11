@@ -118,6 +118,27 @@ retain the corresponding business operation's fields.
 | `/plugins/store/<id>/install` | POST | Install or update a plugin. |
 | `/plugins/<id>/quota` | GET, POST, DELETE | Read, fetch, or reset plugin quota. |
 
+### Disabling a config API key
+
+API keys declared in `config.yaml` (`gemini-api-key`, `interactions-api-key`,
+`claude-api-key`, `codex-api-key`, `xai-api-key`, `meta-api-key`,
+`vertex-api-key`, and the `keys` of an `openai-compatibility` provider) accept a
+`disabled` setting:
+
+```yaml
+claude-api-key:
+  - api-key: "sk-ant-..."
+    base-url: "https://api.anthropic.com"
+    disabled: true # stays configured, out of rotation
+```
+
+A disabled entry is still synthesized and listed by `GET /v8/management/credentials`
+with `"disabled": true` and status `disabled`, so the panel can show it and switch it
+back on; routing skips it. `PATCH /v8/management/credentials/status` with
+`{"name": "<auth id>", "disabled": true|false}` toggles the same flag and persists it
+to `config.yaml`. Enabling clears the legacy `excluded-models: ["*"]` marker that older
+versions wrote instead of the flag.
+
 ## OAuth
 
 The login URL is shared by all providers. Set the required `provider` query

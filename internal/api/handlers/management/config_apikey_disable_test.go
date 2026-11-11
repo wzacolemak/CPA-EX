@@ -8,18 +8,18 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-func TestSetConfigAPIKeyExcludedAll(t *testing.T) {
-	gotDisable := setConfigAPIKeyExcludedAll([]string{"gpt-5"}, true)
-	if len(gotDisable) != 2 || gotDisable[0] != "gpt-5" || gotDisable[1] != "*" {
-		t.Fatalf("unexpected disable list: %#v", gotDisable)
+func TestWithoutLegacyDisablePattern(t *testing.T) {
+	got := withoutLegacyDisablePattern([]string{"gpt-5", "*"})
+	if len(got) != 1 || got[0] != "gpt-5" {
+		t.Fatalf("legacy pattern not stripped: %#v", got)
 	}
-	gotEnable := setConfigAPIKeyExcludedAll([]string{"gpt-5", "*"}, false)
-	if len(gotEnable) != 1 || gotEnable[0] != "gpt-5" {
-		t.Fatalf("unexpected enable list: %#v", gotEnable)
+	got = withoutLegacyDisablePattern([]string{"gpt-5"})
+	if len(got) != 1 || got[0] != "gpt-5" {
+		t.Fatalf("model ids must be preserved: %#v", got)
 	}
 }
 
-func TestToggleConfigAPIKeyExcludedAll_XAI(t *testing.T) {
+func TestToggleConfigAPIKeyDisabled_XAI(t *testing.T) {
 	cfg := &config.Config{
 		XAIKey: []config.XAIKey{{
 			APIKey:  "xai-test",
@@ -38,16 +38,19 @@ func TestToggleConfigAPIKeyExcludedAll_XAI(t *testing.T) {
 		},
 	}
 
-	handled, errToggle := toggleConfigAPIKeyExcludedAll(cfg, auth, true)
+	handled, errToggle := toggleConfigAPIKeyDisabled(cfg, auth, true)
 	if errToggle != nil || !handled {
 		t.Fatalf("toggle disable: handled=%v err=%v", handled, errToggle)
 	}
-	if len(cfg.XAIKey[0].ExcludedModels) != 1 || cfg.XAIKey[0].ExcludedModels[0] != "*" {
-		t.Fatalf("excluded-models = %#v, want [*]", cfg.XAIKey[0].ExcludedModels)
+	if !cfg.XAIKey[0].Disabled {
+		t.Fatal("xai key should be disabled")
+	}
+	if len(cfg.XAIKey[0].ExcludedModels) != 0 {
+		t.Fatalf("excluded-models must stay untouched, got %#v", cfg.XAIKey[0].ExcludedModels)
 	}
 }
 
-func TestToggleConfigAPIKeyExcludedAll_Meta(t *testing.T) {
+func TestToggleConfigAPIKeyDisabled_Meta(t *testing.T) {
 	cfg := &config.Config{
 		MetaKey: []config.MetaKey{{
 			APIKey:  "meta-test",
@@ -66,20 +69,23 @@ func TestToggleConfigAPIKeyExcludedAll_Meta(t *testing.T) {
 		},
 	}
 
-	handled, errToggle := toggleConfigAPIKeyExcludedAll(cfg, auth, true)
+	handled, errToggle := toggleConfigAPIKeyDisabled(cfg, auth, true)
 	if errToggle != nil || !handled {
 		t.Fatalf("toggle disable: handled=%v err=%v", handled, errToggle)
 	}
-	if len(cfg.MetaKey[0].ExcludedModels) != 1 || cfg.MetaKey[0].ExcludedModels[0] != "*" {
-		t.Fatalf("excluded-models = %#v, want [*]", cfg.MetaKey[0].ExcludedModels)
+	if !cfg.MetaKey[0].Disabled {
+		t.Fatal("meta key should be disabled")
 	}
 }
 
-func TestToggleConfigAPIKeyExcludedAll_Codex(t *testing.T) {
+// Codex keeps a real excluded model while disabling, and enabling clears the legacy
+// "*" that older versions wrote instead of the disabled flag.
+func TestToggleConfigAPIKeyDisabled_Codex(t *testing.T) {
 	cfg := &config.Config{
 		CodexKey: []config.CodexKey{{
-			APIKey:  "sk-test",
-			BaseURL: "https://example.com/v1",
+			APIKey:         "sk-test",
+			BaseURL:        "https://example.com/v1",
+			ExcludedModels: []string{"gpt-4o"},
 		}},
 	}
 	idGen := synthesizer.NewStableIDGenerator()
@@ -94,24 +100,31 @@ func TestToggleConfigAPIKeyExcludedAll_Codex(t *testing.T) {
 		},
 	}
 
-	handled, err := toggleConfigAPIKeyExcludedAll(cfg, auth, true)
+	handled, err := toggleConfigAPIKeyDisabled(cfg, auth, true)
 	if err != nil || !handled {
 		t.Fatalf("toggle disable: handled=%v err=%v", handled, err)
 	}
-	if len(cfg.CodexKey[0].ExcludedModels) != 1 || cfg.CodexKey[0].ExcludedModels[0] != "*" {
-		t.Fatalf("expected excluded-models [*], got %#v", cfg.CodexKey[0].ExcludedModels)
+	if !cfg.CodexKey[0].Disabled {
+		t.Fatal("codex key should be disabled")
+	}
+	if len(cfg.CodexKey[0].ExcludedModels) != 1 || cfg.CodexKey[0].ExcludedModels[0] != "gpt-4o" {
+		t.Fatalf("excluded-models = %#v, want [gpt-4o]", cfg.CodexKey[0].ExcludedModels)
 	}
 
-	handled, err = toggleConfigAPIKeyExcludedAll(cfg, auth, false)
+	cfg.CodexKey[0].ExcludedModels = []string{"gpt-4o", "*"}
+	handled, err = toggleConfigAPIKeyDisabled(cfg, auth, false)
 	if err != nil || !handled {
 		t.Fatalf("toggle enable: handled=%v err=%v", handled, err)
 	}
-	if len(cfg.CodexKey[0].ExcludedModels) != 0 {
-		t.Fatalf("expected excluded-models cleared, got %#v", cfg.CodexKey[0].ExcludedModels)
+	if cfg.CodexKey[0].Disabled {
+		t.Fatal("codex key should be enabled")
+	}
+	if len(cfg.CodexKey[0].ExcludedModels) != 1 || cfg.CodexKey[0].ExcludedModels[0] != "gpt-4o" {
+		t.Fatalf("legacy pattern not migrated, excluded-models = %#v", cfg.CodexKey[0].ExcludedModels)
 	}
 }
 
-func TestToggleConfigAPIKeyExcludedAll_Vertex_NoBaseURL(t *testing.T) {
+func TestToggleConfigAPIKeyDisabled_Vertex_NoBaseURL(t *testing.T) {
 	cfg := &config.Config{
 		VertexCompatAPIKey: []config.VertexCompatKey{{
 			APIKey: "vertex-key-only",
@@ -129,16 +142,16 @@ func TestToggleConfigAPIKeyExcludedAll_Vertex_NoBaseURL(t *testing.T) {
 		},
 	}
 
-	handled, errToggle := toggleConfigAPIKeyExcludedAll(cfg, auth, true)
+	handled, errToggle := toggleConfigAPIKeyDisabled(cfg, auth, true)
 	if errToggle != nil || !handled {
 		t.Fatalf("toggle disable: handled=%v err=%v", handled, errToggle)
 	}
-	if len(cfg.VertexCompatAPIKey[0].ExcludedModels) != 1 || cfg.VertexCompatAPIKey[0].ExcludedModels[0] != "*" {
-		t.Fatalf("excluded-models = %#v, want [*]", cfg.VertexCompatAPIKey[0].ExcludedModels)
+	if !cfg.VertexCompatAPIKey[0].Disabled {
+		t.Fatal("vertex key should be disabled")
 	}
 }
 
-func TestToggleConfigAPIKeyExcludedAll_EmptyKeyWithBaseURL(t *testing.T) {
+func TestToggleConfigAPIKeyDisabled_EmptyKeyWithBaseURL(t *testing.T) {
 	cfg := &config.Config{
 		ClaudeKey: []config.ClaudeKey{{
 			APIKey:  "",
@@ -172,19 +185,19 @@ func TestToggleConfigAPIKeyExcludedAll_EmptyKeyWithBaseURL(t *testing.T) {
 		},
 	}
 
-	handled, err := toggleConfigAPIKeyExcludedAll(cfg, claudeAuth, true)
+	handled, err := toggleConfigAPIKeyDisabled(cfg, claudeAuth, true)
 	if err != nil || !handled {
 		t.Fatalf("toggle claude: handled=%v err=%v", handled, err)
 	}
-	if len(cfg.ClaudeKey[0].ExcludedModels) != 1 || cfg.ClaudeKey[0].ExcludedModels[0] != "*" {
-		t.Fatalf("claude excluded-models = %#v, want [*]", cfg.ClaudeKey[0].ExcludedModels)
+	if !cfg.ClaudeKey[0].Disabled {
+		t.Fatal("claude key should be disabled")
 	}
 
-	handled, err = toggleConfigAPIKeyExcludedAll(cfg, geminiAuth, true)
+	handled, err = toggleConfigAPIKeyDisabled(cfg, geminiAuth, true)
 	if err != nil || !handled {
 		t.Fatalf("toggle gemini: handled=%v err=%v", handled, err)
 	}
-	if len(cfg.GeminiKey[0].ExcludedModels) != 1 || cfg.GeminiKey[0].ExcludedModels[0] != "*" {
-		t.Fatalf("gemini excluded-models = %#v, want [*]", cfg.GeminiKey[0].ExcludedModels)
+	if !cfg.GeminiKey[0].Disabled {
+		t.Fatal("gemini key should be disabled")
 	}
 }

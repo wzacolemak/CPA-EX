@@ -628,9 +628,11 @@ upstream:
 #       keys:
 #         - api-key: "AIzaSy...01"
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           disabled: false      # optional: true keeps the key configured but out of rotation
 #         # A second key shares this group's endpoint, headers, and models.
 #         - api-key: "replace-with-second-gemini-key"
 #           weight: 2
+#           disabled: false      # optional: true keeps the key configured but out of rotation
 #           priority: null # inherit the group priority
 #           prefix: null # inherit the group prefix
 #           proxy-url: "direct" # override the group proxy for this key
@@ -678,6 +680,7 @@ upstream:
 #       keys:
 #         - api-key: "AIzaSy...03"
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           disabled: false      # optional: true keeps the key configured but out of rotation
 #
 #   # Vertex API keys (Vertex-compatible endpoints, base-url is optional)
 #
@@ -709,6 +712,7 @@ upstream:
 #       keys:
 #         - api-key: "vk-123..."                        # x-goog-api-key header
 #           weight: 5                                    # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           disabled: false      # optional: true keeps the key configured but out of rotation
 #
 #   # Codex API keys
 #
@@ -765,6 +769,7 @@ upstream:
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #           # connection-pool:                # optional: per-key override of the group pool setting
 #           #   enabled: false                # opt this key out while the group stays pooled
+#           disabled: false      # optional: true keeps the key configured but out of rotation
 #           disable-codex-cloaking: false # optional: true disables cloaking; OAuth provider settings do not apply here
 #           alpha-search: false # optional: allow this key to serve /v1/alpha/search via base-url + /alpha/search
 #           websockets: false # optional: use the Codex upstream WebSocket transport
@@ -809,6 +814,7 @@ upstream:
 #       keys:
 #         - api-key: "sk-atSM..."
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           disabled: false      # optional: true keeps the key configured but out of rotation
 #           rebuild-mid-system-message: false # optional: default is false; when true, move messages with role "system" into the top-level Claude system field
 #           native-tool-search: false # optional: default is false; when true, trust this key's custom base-url with Anthropic native tool search (defer_loading + tool_reference) for Codex tool_search; requires upstream.claude.tool-search: true
 #           cloak:                         # optional: explicitly enable request cloaking for non-Claude-Code clients
@@ -923,6 +929,7 @@ upstream:
 #       keys:
 #         - api-key: "xai-..."
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           disabled: false      # optional: true keeps the key configured but out of rotation
 #           websockets: true # optional: use the xAI upstream websocket transport for downstream websocket requests
 #
 #   # Meta API keys (Muse Code)
@@ -943,6 +950,7 @@ upstream:
 #       keys:
 #         - api-key: "..."
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           disabled: false      # optional: true keeps the key configured but out of rotation
 #
 #   # OpenAI compatibility providers
 #
@@ -971,6 +979,7 @@ upstream:
 #       keys:
 #         - api-key: "sk-or-v1-...b780"
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           disabled: false      # optional: true keeps the key configured but out of rotation
 #           proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override
 #           # proxy-url: "direct" # optional: explicit direct connect for this credential
 #           # connection-pool: # optional: per-key override of the group pool block

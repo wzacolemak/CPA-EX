@@ -125,6 +125,16 @@ func (s *ConfigSynthesizer) synthesizeInteractionsKeys(ctx *SynthesisContext) []
 	return s.synthesizeGeminiKeyEntries(ctx, ctx.Config.InteractionsKey, "gemini-interactions:apikey", "interactions", "interactions-apikey", constant.GeminiInteractions)
 }
 
+// applyConfigKeyDisabled keeps a credential with disabled: true configured but out of
+// rotation, so settings still list it and an operator can switch it back on.
+func applyConfigKeyDisabled(auth *coreauth.Auth, disabled bool) {
+	if !disabled {
+		return
+	}
+	auth.Disabled = true
+	auth.Status = coreauth.StatusDisabled
+}
+
 func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, entries []config.GeminiKey, idKind, sourceName, label, provider string) []*coreauth.Auth {
 	now := ctx.Now
 	idGen := ctx.IDGenerator
@@ -183,6 +193,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 			ProxyConnectionPool: authProxyConnectionPool(entry.ConnectionPool),
 		}
 		ApplyAuthExcludedModelsMeta(a, entry.ExcludedModels, "apikey")
+		applyConfigKeyDisabled(a, entry.Disabled)
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
@@ -260,6 +271,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			ProxyConnectionPool: authProxyConnectionPool(ck.ConnectionPool),
 		}
 		ApplyAuthExcludedModelsMeta(a, ck.ExcludedModels, "apikey")
+		applyConfigKeyDisabled(a, ck.Disabled)
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
@@ -349,6 +361,7 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 			ProxyConnectionPool: authProxyConnectionPool(entry.ConnectionPool),
 		}
 		ApplyAuthExcludedModelsMeta(a, entry.ExcludedModels, "apikey")
+		applyConfigKeyDisabled(a, entry.Disabled)
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
@@ -428,6 +441,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				UpdatedAt:           now,
 				ProxyConnectionPool: authProxyConnectionPool(openAICompatConnectionPool(compat, entry)),
 			}
+			applyConfigKeyDisabled(a, entry.Disabled)
 			if len(a.Metadata) == 0 {
 				a.Metadata = nil
 			}
@@ -551,6 +565,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			ProxyConnectionPool: authProxyConnectionPool(compat.ConnectionPool),
 		}
 		ApplyAuthExcludedModelsMeta(a, compat.ExcludedModels, "apikey")
+		applyConfigKeyDisabled(a, compat.Disabled)
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
