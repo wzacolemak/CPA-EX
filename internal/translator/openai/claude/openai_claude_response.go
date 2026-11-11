@@ -8,6 +8,8 @@ package claude
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"math"
 	"sort"
@@ -65,6 +67,8 @@ type ConvertOpenAIResponseToAnthropicParams struct {
 	OpenToolCallIndex int
 	// Queue of interleaved text or thinking chunks arriving while a tool call is open
 	InterleavedContentChunks []InterleavedContentChunk
+	// Accumulated thinking text, used to mint a synthetic signature when the block closes
+	ThinkingAccumulator strings.Builder
 	// Usage metrics cached from streaming chunks
 	UsageInputTokens      int64
 	UsageOutputTokens     int64
@@ -445,6 +449,7 @@ func convertOpenAINonStreamingToAnthropic(rawJSON []byte) [][]byte {
 			}
 			blockDoc := ojson.NewDocString(`{"type":"thinking","thinking":""}`)
 			_ = blockDoc.Set("thinking", reasoningText)
+			_ = blockDoc.Set("signature", cpaThinkingSignature(reasoningText))
 			contentBlocks = append(contentBlocks, blockDoc.Bytes())
 		}
 
@@ -589,6 +594,7 @@ func emitStreamingThinkingDelta(param *ConvertOpenAIResponseToAnthropicParams, r
 	thinkingDeltaDoc := ojson.NewDocString(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}`)
 	_ = thinkingDeltaDoc.Set("index", param.ThinkingContentBlockIndex)
 	_ = thinkingDeltaDoc.Set("delta.thinking", reasoningText)
+	param.ThinkingAccumulator.WriteString(reasoningText)
 	*results = append(*results, translatorcommon.AppendSSEEventBytes(nil, "content_block_delta", thinkingDeltaDoc.Bytes(), 2))
 }
 
@@ -656,6 +662,7 @@ func appendOpenAINonStreamingMessageContent(contentResult ojson.Result, toolName
 			}
 			blockDoc := ojson.NewDocString(`{"type":"thinking","thinking":""}`)
 			_ = blockDoc.Set("thinking", thinkingBuilder.String())
+			_ = blockDoc.Set("signature", cpaThinkingSignature(thinkingBuilder.String()))
 			*blocks = append(*blocks, blockDoc.Bytes())
 			thinkingBuilder.Reset()
 		}
@@ -749,10 +756,31 @@ func collectOpenAIReasoningTexts(node ojson.Result) []string {
 	return texts
 }
 
+// cpaThinkingSignature returns a deterministic synthetic signature for one thinking
+// block. OpenAI-compatible reasoning upstreams (for example opencode Go) stream
+// reasoning_content without any signature, and Claude-compatible clients either drop
+// or downgrade unsigned thinking blocks when they replay history, which makes models
+// fall back to writing their reasoning inline as plain text. A signature derived from
+// the text keeps the block replayable and stays identical across retries and restarts.
+func cpaThinkingSignature(thinkingText string) string {
+	if thinkingText == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("cpa-thinking-signature-v1\x00" + thinkingText))
+	return "cpa1-" + base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
 func stopThinkingContentBlock(param *ConvertOpenAIResponseToAnthropicParams, results *[][]byte) {
 	if !param.ThinkingContentBlockStarted {
 		return
 	}
+	if signature := cpaThinkingSignature(param.ThinkingAccumulator.String()); signature != "" {
+		signatureDoc := ojson.NewDocString(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":""}}`)
+		_ = signatureDoc.Set("index", param.ThinkingContentBlockIndex)
+		_ = signatureDoc.Set("delta.signature", signature)
+		*results = append(*results, translatorcommon.AppendSSEEventBytes(nil, "content_block_delta", signatureDoc.Bytes(), 2))
+	}
+	param.ThinkingAccumulator.Reset()
 	contentBlockStopJSON := []byte(`{"type":"content_block_stop","index":0}`)
 	contentBlockStopJSON, _ = ojson.SetBytes(contentBlockStopJSON, "index", param.ThinkingContentBlockIndex)
 	*results = append(*results, translatorcommon.AppendSSEEventBytes(nil, "content_block_stop", contentBlockStopJSON, 2))
@@ -865,6 +893,10 @@ func emitBufferedInterleavedContent(param *ConvertOpenAIResponseToAnthropicParam
 			_ = deltaDoc.Set("index", idx)
 			_ = deltaDoc.Set("delta.thinking", chunk.Text)
 			*results = append(*results, translatorcommon.AppendSSEEventBytes(nil, "content_block_delta", deltaDoc.Bytes(), 2))
+			signatureDoc := ojson.NewDocString(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":""}}`)
+			_ = signatureDoc.Set("index", idx)
+			_ = signatureDoc.Set("delta.signature", cpaThinkingSignature(chunk.Text))
+			*results = append(*results, translatorcommon.AppendSSEEventBytes(nil, "content_block_delta", signatureDoc.Bytes(), 2))
 
 			stopJSON := []byte(`{"type":"content_block_stop","index":0}`)
 			stopJSON, _ = ojson.SetBytes(stopJSON, "index", idx)
@@ -973,6 +1005,7 @@ func ConvertOpenAIResponseToClaudeNonStream(_ context.Context, _ string, origina
 				}
 				blockDoc := ojson.NewDocString(`{"type":"thinking","thinking":""}`)
 				_ = blockDoc.Set("thinking", reasoningText)
+				_ = blockDoc.Set("signature", cpaThinkingSignature(reasoningText))
 				blocks = append(blocks, blockDoc.Bytes())
 			}
 
