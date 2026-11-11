@@ -209,13 +209,13 @@ func TestConvertAntigravityResponseToClaudeStream_SafetyFinishReasonMapsToRefusa
 	outputText := string(output)
 
 	messageDelta := sseDataForEvent(t, outputText, "message_delta")
-	if got := gjson.Get(messageDelta, "delta.stop_reason").String(); got != "refusal" {
+	if got := ojson.Get(messageDelta, "delta.stop_reason").String(); got != "refusal" {
 		t.Fatalf("stop_reason = %q, want refusal (SAFETY must not degrade to end_turn): %s", got, messageDelta)
 	}
-	if got := gjson.Get(messageDelta, "usage.input_tokens").Int(); got != 54726 {
+	if got := ojson.Get(messageDelta, "usage.input_tokens").Int(); got != 54726 {
 		t.Fatalf("input_tokens = %d, want 54726: %s", got, messageDelta)
 	}
-	if got := gjson.Get(messageDelta, "usage.output_tokens").Int(); got != 0 {
+	if got := ojson.Get(messageDelta, "usage.output_tokens").Int(); got != 0 {
 		t.Fatalf("output_tokens = %d, want 0: %s", got, messageDelta)
 	}
 	// 流必须正常收尾，客户端不能悬挂。
@@ -228,12 +228,12 @@ func TestConvertAntigravityResponseToClaudeNonStream_SafetyFinishReasonMapsToRef
 	requestJSON := []byte(`{"model":"claude-opus-5-5-high","messages":[{"role":"user","content":"hi"}]}`)
 	output := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "claude-opus-5-5-high", requestJSON, requestJSON, testSafetyBlockedAntigravityResponse(), nil)
 
-	if got := gjson.GetBytes(output, "stop_reason").String(); got != "refusal" {
+	if got := ojson.GetBytes(output, "stop_reason").String(); got != "refusal" {
 		t.Fatalf("stop_reason = %q, want refusal: %s", got, output)
 	}
 	// 必须携带一段人类可读的拒绝说明，否则客户端只看到空响应。
 	var notice string
-	for _, block := range gjson.GetBytes(output, "content").Array() {
+	for _, block := range ojson.GetBytes(output, "content").Array() {
 		if block.Get("type").String() == "text" {
 			notice = block.Get("text").String()
 		}

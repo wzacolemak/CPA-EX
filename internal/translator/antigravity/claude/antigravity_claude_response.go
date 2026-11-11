@@ -490,8 +490,9 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 				params.ResponseType = 0
 			}
 			appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, params.ResponseIndex))
-			noticeData, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", antigravityRefusalNotice(params.FinishReason))
-			appendEvent("content_block_delta", string(noticeData))
+			noticeDoc := ojson.NewDocString(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex))
+			_ = noticeDoc.Set("delta.text", antigravityRefusalNotice(params.FinishReason))
+			appendEvent("content_block_delta", string(noticeDoc.Bytes()))
 			params.ResponseType = 1
 			params.HasContent = true
 		}
@@ -867,7 +868,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	// completion. Upstream >= v8.0.58 maps these finish reasons to "refusal"
 	// via resolveAntigravityClaudeStopReason; here we only add the notice block.
 	if isAntigravityContentFilterFinishReason(finishReason) && !hasSemanticContent {
-		if noticeBlock, errNotice := ojson.SetBytes([]byte(), "text", antigravityRefusalNotice(finishReason)); errNotice == nil {
+		if noticeBlock, errNotice := ojson.SetBytes([]byte(`{"type":"text","text":""}`), "text", antigravityRefusalNotice(finishReason)); errNotice == nil {
 			blocks = append(blocks, noticeBlock)
 		}
 	}
@@ -876,11 +877,6 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		_ = responseDoc.SetRawBytes("content", translatorcommon.JoinRawArray(blocks))
 	}
 
-	var finishReason string
-	if finish := root.Get("response.candidates.0.finishReason"); finish.Exists() {
-		finishReason = finish.String()
-	}
-	stopReason := resolveAntigravityClaudeStopReason(finishReason, hasToolCall)
 	_ = responseDoc.Set("stop_reason", stopReason)
 
 	if promptTokens == 0 && outputTokens == 0 {

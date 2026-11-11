@@ -50,7 +50,11 @@ func toggleConfigAPIKeyDisabled(cfg *config.Config, auth *coreauth.Auth, disable
 
 	for i := range cfg.GeminiKey {
 		entry := &cfg.GeminiKey[i]
-		if configAPIKeyEntryID(idGen, "gemini:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL, entry.Prefix, config.FormatSortedHeaders(entry.Headers)) != authID {
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		prefix := strings.TrimSpace(entry.Prefix)
+		if key == "" && base == "" {
 			continue
 		}
 		idParts := []string{key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers)}
@@ -65,7 +69,11 @@ func toggleConfigAPIKeyDisabled(cfg *config.Config, auth *coreauth.Auth, disable
 	}
 	for i := range cfg.InteractionsKey {
 		entry := &cfg.InteractionsKey[i]
-		if configAPIKeyEntryID(idGen, "gemini-interactions:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL, entry.Prefix, config.FormatSortedHeaders(entry.Headers)) != authID {
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		prefix := strings.TrimSpace(entry.Prefix)
+		if key == "" && base == "" {
 			continue
 		}
 		idParts := []string{key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers)}
@@ -80,7 +88,11 @@ func toggleConfigAPIKeyDisabled(cfg *config.Config, auth *coreauth.Auth, disable
 	}
 	for i := range cfg.ClaudeKey {
 		entry := &cfg.ClaudeKey[i]
-		if configAPIKeyEntryID(idGen, "claude:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL, entry.Prefix, config.FormatSortedHeaders(entry.Headers)) != authID {
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		prefix := strings.TrimSpace(entry.Prefix)
+		if key == "" && base == "" {
 			continue
 		}
 		idParts := []string{key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers)}
@@ -95,7 +107,11 @@ func toggleConfigAPIKeyDisabled(cfg *config.Config, auth *coreauth.Auth, disable
 	}
 	for i := range cfg.CodexKey {
 		entry := &cfg.CodexKey[i]
-		if configAPIKeyEntryID(idGen, "codex:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL, entry.Prefix, config.FormatSortedHeaders(entry.Headers)) != authID {
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		prefix := strings.TrimSpace(entry.Prefix)
+		if key == "" && base == "" {
 			continue
 		}
 		idParts := []string{key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers)}
@@ -110,7 +126,11 @@ func toggleConfigAPIKeyDisabled(cfg *config.Config, auth *coreauth.Auth, disable
 	}
 	for i := range cfg.XAIKey {
 		entry := &cfg.XAIKey[i]
-		if configAPIKeyEntryID(idGen, "xai:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL, entry.Prefix, config.FormatSortedHeaders(entry.Headers)) != authID {
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		prefix := strings.TrimSpace(entry.Prefix)
+		if key == "" && base == "" {
 			continue
 		}
 		idParts := []string{key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers)}
@@ -125,7 +145,11 @@ func toggleConfigAPIKeyDisabled(cfg *config.Config, auth *coreauth.Auth, disable
 	}
 	for i := range cfg.MetaKey {
 		entry := &cfg.MetaKey[i]
-		if configAPIKeyEntryID(idGen, "meta:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL, entry.Prefix, config.FormatSortedHeaders(entry.Headers)) != authID {
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		prefix := strings.TrimSpace(entry.Prefix)
+		if key == "" && base == "" {
 			continue
 		}
 		idParts := []string{key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers)}
@@ -152,8 +176,6 @@ func toggleConfigAPIKeyDisabled(cfg *config.Config, auth *coreauth.Auth, disable
 			applyConfigAPIKeyDisabled(&entry.Disabled, &entry.ExcludedModels, disable)
 			return true, nil
 		}
-		applyConfigAPIKeyDisabled(&entry.Disabled, &entry.ExcludedModels, disable)
-		return true, nil
 	}
 	return false, nil
 }
