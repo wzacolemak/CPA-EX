@@ -29,6 +29,7 @@ import (
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
@@ -622,6 +623,24 @@ func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
 	return newTestServerWithConfig(t, cfg, opts...)
 }
 
+// discardRequestLogger is a RequestLogger that persists nothing. The default
+// factory writes a forced error log for every response with status >= 400 even
+// when request logging is disabled, and that write lands in auth-dir/logs,
+// which sits inside the test's t.TempDir. A test whose last response is an
+// error therefore races the TempDir cleanup ("directory not empty"). Tests that
+// assert on log files install their own logger through WithRequestLoggerFactory.
+type discardRequestLogger struct{}
+
+func (discardRequestLogger) LogRequest(string, string, map[string][]string, []byte, int, map[string][]string, []byte, []byte, []byte, []byte, []byte, []*interfaces.ErrorMessage, string, time.Time, time.Time) error {
+	return nil
+}
+
+func (discardRequestLogger) LogStreamingRequest(string, string, map[string][]string, []byte, string) (internallogging.StreamingLogWriter, error) {
+	return &internallogging.NoOpStreamingLogWriter{}, nil
+}
+
+func (discardRequestLogger) IsEnabled() bool { return false }
+
 func newTestServerWithConfig(t *testing.T, cfg *proxyconfig.Config, opts ...ServerOption) *Server {
 	t.Helper()
 
@@ -641,6 +660,10 @@ func newTestServerWithConfig(t *testing.T, cfg *proxyconfig.Config, opts ...Serv
 
 	authManager := auth.NewManager(nil, nil, nil)
 	accessManager := sdkaccess.NewManager()
+
+	opts = append([]ServerOption{WithRequestLoggerFactory(func(*proxyconfig.Config, string) internallogging.RequestLogger {
+		return discardRequestLogger{}
+	})}, opts...)
 
 	configPath := filepath.Join(tmpDir, "config.yaml")
 	return NewServer(cfg, authManager, accessManager, configPath, opts...)

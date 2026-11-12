@@ -201,3 +201,53 @@ func TestToggleConfigAPIKeyDisabled_EmptyKeyWithBaseURL(t *testing.T) {
 		t.Fatal("gemini key should be disabled")
 	}
 }
+
+// An openai-compatibility key is synthesized as config API key auth too, so the
+// settings panel can list it. Toggling must reach that one key entry and leave
+// its siblings in the same provider in rotation.
+func TestToggleConfigAPIKeyDisabled_OpenAICompatibilityKey(t *testing.T) {
+	cfg := &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:    "opencode_go",
+			BaseURL: "https://opencode.ai/zen/go/v1",
+			APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+				{APIKey: "sk-first"},
+				{APIKey: "sk-second"},
+			},
+		}},
+	}
+	idGen := synthesizer.NewStableIDGenerator()
+	authID, _ := idGen.Next("openai-compatibility:opencode_go", "sk-second", "https://opencode.ai/zen/go/v1", "")
+	auth := &coreauth.Auth{
+		ID:       authID,
+		Provider: "openai-compatibility:opencode_go",
+		Attributes: map[string]string{
+			"api_key":     "sk-second",
+			"base_url":    "https://opencode.ai/zen/go/v1",
+			"source":      "config:opencode_go[abc]",
+			"compat_name": "opencode_go",
+		},
+	}
+
+	handled, errToggle := toggleConfigAPIKeyDisabled(cfg, auth, true)
+	if errToggle != nil || !handled {
+		t.Fatalf("toggle disable: handled=%v err=%v", handled, errToggle)
+	}
+	if cfg.OpenAICompatibility[0].APIKeyEntries[0].Disabled {
+		t.Fatal("sibling key must stay in rotation")
+	}
+	if !cfg.OpenAICompatibility[0].APIKeyEntries[1].Disabled {
+		t.Fatal("target key should be disabled")
+	}
+	if cfg.OpenAICompatibility[0].Disabled {
+		t.Fatal("provider group must stay enabled")
+	}
+
+	handled, errToggle = toggleConfigAPIKeyDisabled(cfg, auth, false)
+	if errToggle != nil || !handled {
+		t.Fatalf("toggle enable: handled=%v err=%v", handled, errToggle)
+	}
+	if cfg.OpenAICompatibility[0].APIKeyEntries[1].Disabled {
+		t.Fatal("target key should be back in rotation")
+	}
+}

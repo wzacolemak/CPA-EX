@@ -480,6 +480,57 @@ func mustBuildTXTRecords(t *testing.T, opts TXTOptions) []string {
 	return records
 }
 
+// multicastLoopbackDelivers reports whether a datagram sent to the mDNS
+// multicast group from an interface is looped back to a socket on this host.
+// A live advertise/browse test can only observe its own announcement when the
+// host both routes multicast and enables IP_MULTICAST_LOOP; containers and
+// hardened hosts commonly disable the latter, which no code change can fix.
+func multicastLoopbackDelivers(t *testing.T, ifaces []net.Interface) bool {
+	t.Helper()
+	if len(ifaces) == 0 {
+		return false
+	}
+
+	const probePort = 5353
+	reader, errListen := net.ListenMulticastUDP("udp4", &ifaces[0], &net.UDPAddr{
+		IP:   net.IPv4(224, 0, 0, 251),
+		Port: probePort,
+	})
+	if errListen != nil {
+		// Cannot join the group at all: treat as unsupported, not as broken.
+		return false
+	}
+	defer func() {
+		if errClose := reader.Close(); errClose != nil {
+			t.Logf("close multicast probe reader: %v", errClose)
+		}
+	}()
+
+	sender, errDial := net.DialUDP("udp4", nil, &net.UDPAddr{
+		IP:   net.IPv4(224, 0, 0, 251),
+		Port: probePort,
+	})
+	if errDial != nil {
+		return false
+	}
+	defer func() {
+		if errClose := sender.Close(); errClose != nil {
+			t.Logf("close multicast probe sender: %v", errClose)
+		}
+	}()
+
+	if _, errWrite := sender.Write([]byte("cpa-multicast-loopback-probe")); errWrite != nil {
+		return false
+	}
+
+	if errDeadline := reader.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); errDeadline != nil {
+		return false
+	}
+	buf := make([]byte, 64)
+	_, _, errRead := reader.ReadFrom(buf)
+	return errRead == nil
+}
+
 func TestAdvertiserAndBrowser_Integration(t *testing.T) {
 	ifaces, _ := FilterInterfaces(nil, nil)
 	spec := ServiceSpec{
@@ -503,6 +554,15 @@ func TestAdvertiserAndBrowser_Integration(t *testing.T) {
 			t.Errorf("advertiser cleanup failed: %v", errStop)
 		}
 	}()
+
+	// A host that routes multicast fine but disables multicast loopback (the
+	// default on many container and hardened hosts) still opens every socket,
+	// so Start and Browse both succeed while the advertiser can never see its
+	// own packet. Detect that condition up front and skip, instead of failing
+	// an assertion the environment cannot satisfy.
+	if !multicastLoopbackDelivers(t, ifaces) {
+		t.Skip("skipping live multicast test: host does not deliver multicast loopback")
+	}
 
 	browseCtx, browseCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer browseCancel()

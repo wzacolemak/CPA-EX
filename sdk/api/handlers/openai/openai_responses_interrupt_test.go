@@ -270,8 +270,22 @@ func (e *homeInterruptExecutor) InterruptExecutionSession(ctx context.Context, s
 }
 
 type blockingHTTPInterruptExecutor struct {
-	calls    atomic.Int32
-	canceled atomic.Bool
+	calls atomic.Int32
+	// canceled is closed once the executor observes context cancellation. The
+	// handler writes the interrupted event before it cancels the request
+	// context, so the downstream read can complete first; the test must wait
+	// for this signal instead of sampling a flag right after the read.
+	canceled chan struct{}
+	once     sync.Once
+}
+
+func newBlockingHTTPInterruptExecutor() *blockingHTTPInterruptExecutor {
+	return &blockingHTTPInterruptExecutor{canceled: make(chan struct{})}
+}
+
+// cancellation returns the channel closed when the upstream context is canceled.
+func (e *blockingHTTPInterruptExecutor) cancellation() <-chan struct{} {
+	return e.canceled
 }
 
 func (*blockingHTTPInterruptExecutor) Identifier() string { return "codex" }
@@ -292,7 +306,7 @@ func (e *blockingHTTPInterruptExecutor) ExecuteStream(ctx context.Context, _ *co
 		}
 		chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"response.created","response":{"id":"r-http"}}`)}
 		<-ctx.Done()
-		e.canceled.Store(true)
+		e.once.Do(func() { close(e.canceled) })
 	}()
 	return &coreexecutor.StreamResult{Chunks: chunks}, nil
 }
@@ -317,7 +331,7 @@ func (*blockingHTTPInterruptExecutor) InterruptExecutionSession(context.Context,
 // cancels an HTTP upstream turn and lets the same socket continue.
 func TestResponsesInterruptStopsHTTPUpstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	executor := &blockingHTTPInterruptExecutor{}
+	executor := newBlockingHTTPInterruptExecutor()
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.SetConfig(&config.Config{})
 	manager.RegisterExecutor(executor)
@@ -372,7 +386,9 @@ func TestResponsesInterruptStopsHTTPUpstream(t *testing.T) {
 	if got := ojson.GetBytesNoCopy(interrupted, "response.incomplete_details.reason").String(); got != "interrupted" {
 		t.Fatalf("interrupt reason = %q, payload %s", got, interrupted)
 	}
-	if !executor.canceled.Load() {
+	select {
+	case <-executor.cancellation():
+	case <-time.After(5 * time.Second):
 		t.Fatal("http upstream was not canceled")
 	}
 	if errSend := client.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"previous_response_id":"r-http","input":[]}`, model))); errSend != nil {

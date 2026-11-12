@@ -177,7 +177,69 @@ func toggleConfigAPIKeyDisabled(cfg *config.Config, auth *coreauth.Auth, disable
 			return true, nil
 		}
 	}
+	if toggleOpenAICompatibilityKeyDisabled(cfg, idGen, authID, disable) {
+		return true, nil
+	}
 	return false, nil
+}
+
+// openAICompatPoolForID mirrors the synthesizer's per-key pool resolution so this
+// package can rebuild an entry's auth ID. It must stay in step with
+// synthesizer.openAICompatConnectionPool, which owns the real routing behavior.
+func openAICompatPoolForID(compat *config.OpenAICompatibility, entry *config.OpenAICompatibilityAPIKey) *config.ProxyConnectionPoolConfig {
+	var group *config.ProxyConnectionPoolConfig
+	if compat != nil {
+		group = compat.ConnectionPool
+	}
+	if entry == nil || entry.ConnectionPool == nil {
+		return group
+	}
+	merged := *entry.ConnectionPool
+	if group != nil {
+		if merged.Enabled == nil {
+			merged.Enabled = group.Enabled
+		}
+		if strings.TrimSpace(merged.IdleConnTimeout) == "" {
+			merged.IdleConnTimeout = group.IdleConnTimeout
+		}
+		if merged.MaxIdleConnsPerHost == nil {
+			merged.MaxIdleConnsPerHost = group.MaxIdleConnsPerHost
+		}
+	}
+	return &merged
+}
+
+// toggleOpenAICompatibilityKeyDisabled toggles one key entry inside an
+// openai-compatibility provider. Those keys are synthesized as config API key
+// auths too, so without this branch the settings panel could list them but
+// never switch one off. Only a key entry carries the flag: the key-less
+// fallback auth of a provider is not an API key auth at all, so it never
+// reaches this function.
+func toggleOpenAICompatibilityKeyDisabled(cfg *config.Config, idGen *synthesizer.StableIDGenerator, authID string, disable bool) bool {
+	for i := range cfg.OpenAICompatibility {
+		compat := &cfg.OpenAICompatibility[i]
+		providerName := strings.ToLower(strings.TrimSpace(compat.Name))
+		if providerName == "" {
+			providerName = "openai-compatibility"
+		}
+		idKind := "openai-compatibility:" + providerName
+		base := strings.TrimSpace(compat.BaseURL)
+
+		for j := range compat.APIKeyEntries {
+			entry := &compat.APIKeyEntries[j]
+			effectivePool := openAICompatPoolForID(compat, entry)
+			idParts := []string{strings.TrimSpace(entry.APIKey), base, strings.TrimSpace(entry.ProxyURL)}
+			if poolID := config.FormatConnectionPoolDedupID(effectivePool); poolID != "" {
+				idParts = append(idParts, poolID)
+			}
+			id, _ := idGen.Next(idKind, idParts...)
+			if id == authID {
+				entry.Disabled = disable
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // configAPIKeyEntryID rebuilds the id the synthesizer assigns to a config API key
