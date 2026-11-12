@@ -28,6 +28,13 @@ FROM ${RUNTIME_IMAGE}
 
 RUN mkdir -p /CLIProxyAPI
 
+# Runtime bases such as debian:bookworm ship without ca-certificates, and Go's
+# TLS then rejects every public HTTPS upstream with "certificate signed by
+# unknown authority" - all configured providers fail at once, which reads like
+# a network outage. Copy the Mozilla bundle from the builder stage instead of
+# installing it, so the image stays offline-buildable and small.
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
 COPY --from=builder ./app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
 
 COPY config.example.yaml /CLIProxyAPI/config.example.yaml
@@ -41,5 +48,13 @@ EXPOSE 8317
 ENV TZ=Asia/Shanghai
 
 RUN cp /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
+
+# Fail the build, not production, when the trust store is missing or unusable:
+# an image without a CA bundle only breaks at the first upstream request, long
+# after the deploy looked successful. The size/content check runs only when grep
+# is present, so a minimal runtime base without it cannot false-positive; the
+# non-empty test above is the check that actually catches this bug.
+RUN test -s /etc/ssl/certs/ca-certificates.crt || { echo "ERROR: runtime image has no CA bundle at /etc/ssl/certs/ca-certificates.crt; Go TLS will reject every public HTTPS upstream" >&2; exit 1; }
+RUN if command -v grep >/dev/null 2>&1; then grep -q "BEGIN CERTIFICATE" /etc/ssl/certs/ca-certificates.crt || { echo "ERROR: CA bundle at /etc/ssl/certs/ca-certificates.crt has no certificate; Go TLS will reject every public HTTPS upstream" >&2; exit 1; }; fi
 
 CMD ["./CLIProxyAPI"]
