@@ -4,9 +4,11 @@
 > [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 之上叠加的全部改动，
 > 让未来把上游新 release 合并进来时能快速定位冲突与决策点。
 >
-> 上游基线：v8.0.45 → 已合并 v8.0.58（2026-11-07）。
+> 上游基线：v8.0.45 → v8.0.58（2026-11-07）→ **v8.0.69（2026-11-13）**。
 
-## 一、上游合并（rebase）操作流程（已验证两次）
+## 一、上游合并（rebase）操作流程（已验证三次）
+
+> 术语说明：本文件标题沿用用户习惯叫法「rebase」，实际执行的是 **merge**（见第 3 步）。
 
 1. 部署宿主上 `source/` 目录不是 git 仓库；真正的仓库镜像在独立的 update 工作目录
    （clone 自本 fork，`origin` = 本 fork，`upstream` = 官方仓库）。
@@ -14,10 +16,40 @@
    `rsync -rcn --delete --exclude ".git/" --exclude "/claude" --exclude "/auths" <deploy>/source/ <mirror>/`
    （`/claude` 必须根锚定 —— 不锚定会误伤 `internal/translator/antigravity/claude/`；
    dry-run 输出为空 = 无漂移，可直接合并）。
-3. `git fetch upstream --tags` → 取最新 release tag → `git merge vX.Y.Z`。
+3. **先备份分支**：`git branch -f backup-pre-vX.Y.Z-$(date +%Y%m%d-%H%M%S) HEAD`。
+4. `git fetch upstream --tags` → 取最新 release tag → `git merge vX.Y.Z`。
    **用 merge，不要 rebase**：分支已公开推送，rebase 会改写历史。
-4. 典型冲突与解法见第五节；`go.mod` 合并后必须核对第六节的依赖清单。
-5. 合并提交后 `go build ./...` + 受影响包 `go test`，再推送、替换部署树、重建镜像。
+5. 典型冲突与解法见第五节；`go.mod` 合并后必须核对第六节的依赖清单。
+6. **确认 fork 补丁未被上游冲掉**（每次合并后固定检查，缺一个就是事故）：
+   ```bash
+   grep -c cpaThinkingSignature internal/translator/openai/claude/openai_claude_response.go
+   grep -c antigravityRefusalNotice internal/translator/antigravity/claude/antigravity_claude_response.go
+   grep -c 'access`,`api-keys' static/management.html
+   grep -c ca-certificates.crt Dockerfile
+   ls internal/api/model_acl.go internal/api/daily_cost_quota.go
+   grep -n api-key-policies internal/config/config_v8.go
+   ```
+   全部非零才继续。
+7. 合并提交后 `go build ./...` + 受影响包 `go test`；再跑一次 `go test ./...`
+   确认没有新增失败（目前已知唯一既有失败是
+   `internal/client/codex/live TestPionMediaRelayBridgesAudioAndDataChannel`，
+   上游自带，与 fork 无关）。
+8. 推送 → 替换部署树（rsync 同第 2 步但去掉 `-n`）→ 更新 `docker-compose.yml` 的
+   `COMMIT`/`BUILD_DATE`/`image:` → `docker compose build && up -d` → 按第七节验收。
+
+### 判据：什么时候该取 theirs（上游）而不是死守 fork
+
+合并冲突不是「一律保留 fork」。**当上游独立修好了同一个问题时，取上游版本并删除
+fork 侧补丁**，否则会留下两套机制互相打架。v8.0.69 的实例：
+
+- `openai_responses_interrupt_test.go`：fork 用 `canceled chan struct{}` 修 flaky，
+  上游同样加了 `canceledCh` + `cancelOnce`。→ 取 theirs。
+- `TestServerResponsesWebsocketReauthorizesEachTurn`：fork 曾给测试服务器注入
+  `discardRequestLogger` 来躲开 `t.TempDir` 清理竞态；上游改为用 `requests.Wait()`
+  在 cleanup 前排空被 hijack 的 handler，**并且新增了「日志必须真的落盘」的断言**。
+  此时保留 fork 的 discard logger 会静默废掉这条断言。→ 撤销 fork 补丁，取上游。
+- `nocopy_invariant_test.go`：两侧都给同一文件加了白名单条目。→ 取 theirs
+  （等价且措辞更好），不要留下重复 id。
 
 ## 二、配置面新增（都在 config.yaml 顶层，上游 schema 迁移时会丢，见第五节第 4 条）
 
@@ -29,6 +61,23 @@
 | `access:` / `upstream:` / `credentials:` | v8 迁移后保留自定义段的兼容层 | `internal/config/config_v8.go` |
 | `upstream.claude.disable-claude-cloak-mode` | 关闭 Claude 伪装，保持透传 | `sdk/cliproxy/` |
 | `disable-auto-update-panel: true` | 禁止面板自动更新覆盖本地复合层 | `internal/managementasset/updater.go` |
+| `disabled: true`（渠道 key 级） | 保留凭据但不参与轮询，面板可开关 | `internal/watcher/synthesizer/config.go`、`internal/api/handlers/management/config_apikey_disable.go` |
+
+### 渠道 key 的 disabled 开关（2026-11-12 补齐）
+
+`gemini-api-key` / `interactions-api-key` / `claude-api-key` / `codex-api-key` /
+`xai-api-key` / `meta-api-key` / `vertex-api-key` 的每个 key，以及
+`openai-compatibility.<provider>.keys[]` 的每个 key，都支持 `disabled: true`：
+
+- 合成期置 `auth.Disabled = true` + `auth.Status = StatusDisabled`，凭据仍在列表里、
+  仍被面板显示，但路由与冷却逻辑全部跳过（`selector.go` / `conductor_cooldown.go`）。
+- 开关走 `PATCH /v8/management/credentials/status`，落盘到 config.yaml。
+- **曾经的坑**：`openai-compatibility` 下的 key 会被合成为 config API key auth，
+  面板能列出但 PATCH 返回 404，永远关不掉——因为 `toggleConfigAPIKeyDisabled`
+  没遍历该 provider。已补 `toggleOpenAICompatibilityKeyDisabled`，
+  按合成器完全一致的 auth ID 重建规则匹配（含 connection-pool dedup id）。
+- 旧版本的「禁用」是往 `excluded-models` 追加 `*`；开启时 `withoutLegacyDisablePattern`
+  会清掉这个遗留标记，真实模型 id 保留。
 
 ## 三、源码改动分区（相对上游累计 ~2.8k 行）
 
@@ -56,7 +105,24 @@
 
 ### 构建（Dockerfile）
 - `ENV GOTOOLCHAIN=auto`（上游 go directive 常超前基础镜像自带工具链）。
-- `ARG GOPROXY` 支持覆盖模块代理；离线友好（去掉 apt-get，复用运行时镜像证书）。
+- `ARG GOPROXY` 支持覆盖模块代理；离线友好（去掉 apt-get 安装步骤）。
+- **运行阶段必须自带 CA 根证书**（2026-11-13 事故）：`RUNTIME_IMAGE` 默认
+  `debian:bookworm` **没有 `/etc/ssl/certs/`**，Go 的 TLS 于是拒绝一切公网 HTTPS
+  上游，报 `certificate signed by unknown authority`。表现为**所有渠道同时失效**，
+  极易误判为网络/代理故障（实际排查中先怀疑了机房链路、节点池、MTU，全部无关）。
+  解法：`COPY --from=builder /etc/ssl/certs/ca-certificates.crt`（builder 阶段
+  `golang:1.26-bookworm` 自带），并在镜像末尾加构建期断言，让缺证书在**构建期**
+  失败而不是上线后第一个请求才暴露：
+  ```
+  RUN test -s /etc/ssl/certs/ca-certificates.crt || { echo "ERROR: ..." >&2; exit 1; }
+  ```
+  （内容断言 `grep -q "BEGIN CERTIFICATE"` 需 `command -v grep` 保护，避免精简
+  基础镜像误报。）
+- **compose 的 build args 会覆盖手工 tag**：`docker compose up` 若发现 `build:`
+  段就会重建镜像并按 compose 内的 `COMMIT`/`BUILD_DATE` 打标。手工
+  `docker build -t ...` 的产物会被静默替换（2026-11-12 因此上线了一个缺证书的
+  镜像）。改代码后**必须同步更新 `docker-compose.yml` 的 `COMMIT`、`BUILD_DATE`
+  与 `image:` tag**，并以 compose 构建为准。
 - 支持既有运行时目录布局。
 
 ### 面板（`static/management.html`）
@@ -68,6 +134,28 @@
 - `README.md` / `README_EN.md`：网关扩展说明（上游 README 的 fork 增补段）。
 - `config.example.yaml`：新增配置段样例。
 - `examples/plugin/**/go.mod`：示例插件依赖跟随上游即可（合并冲突取 theirs）。
+
+## 三之二、上游版本演进记录
+
+### v8.0.58 → v8.0.69（2026-11-13 合并，94 个非 merge 上游提交 / 111 个含 merge）
+
+与本 fork 交集最大、升级时必须留意的几项：
+
+| 上游改动 | 对本 fork 的影响 |
+|---|---|
+| `feat(tunnel)`: 新增多租户 WebSocket 数据交换隧道 `/v1/tunnel`（+服务类型元数据、`/v1/tunnel` 系列路由） | 纯新增，无冲突。但新增了 `/v1/tunnel` 路由，若入口 nginx 有限流/白名单需同步放行 |
+| `feat(api)`: `server.shutdown-timeout` 可选优雅退出 | 纯新增；本 fork 的 `sdk/cliproxy/service_lifecycle.go` 扩展点不受影响 |
+| `fix(gemini)`: 跨工具调用轮次保留 thought signature | 与本 fork 的 `cpaThinkingSignature` 属**不同层**（上游管 Gemini→Claude 真签名透传，fork 管 OpenAI→Claude 无签名铸造）。已确认共存 |
+| `fix(thinking)`: 校验 native responses 的 reasoning efforts | 与本 fork 翻译层改动无重叠 |
+| `test(api)`: WebSocket 重授权测试新增「request log=true/false」双档 + 断言日志落盘 | **直接冲突**：本 fork 曾用 discardRequestLogger 规避竞态，该断言要求日志真落盘。已撤销 fork 补丁（见第一节判据） |
+| `fix(auth)`: 加权池公平性与强制冷却、refresh 任务退避 | 上游修复了 `selector_weighted.go`，并自行登记进 nocopy 白名单 |
+| `feat(models)`: Devin 目录与 Gemini 变体更新 | 仅数据 |
+| `feat(cli)`: config 加载/TUI/启动失败返回非零退出码 | 部署脚本若依赖退出码会有行为改善（以前失败也可能返回 0） |
+
+冲突实况：3 个文件（`nocopy_invariant_test.go`、`config_v8_test.go`、
+`openai_responses_interrupt_test.go`），全部按第一节判据处理。`internal/api/server.go`、
+`server_routes.go`、`config_types.go`、`config_v8.go`、`openai_claude_response.go`
+等「历史悠久的高发文件」本次**自动合并成功**。
 
 ## 四、外部插件（不在本仓库源码树，但升级时必须一起验证）
 
@@ -108,6 +196,19 @@
    （input ≥ cache_read，total = input + output）。
 6. 管理面板可登录、认证文件页正常（复合层 md5 与镜像内一致）。
 7. 每日成本限额端点 `/v0/management/daily-cost-quota` 返回 enabled + limits。
+8. **CA 根证书存在**（缺了就是全线 403/unknown authority）：
+   `docker exec cli-proxy-api sh -c 'ls -l /etc/ssl/certs/ca-certificates.crt'`
+   且镜像内 `head -1` 为 `-----BEGIN CERTIFICATE-----`。
+9. **镜像 commit 与 compose 一致**：`docker exec cli-proxy-api ./CLIProxyAPI --version`
+   的 Commit 必须等于 `docker-compose.yml` 里的 `COMMIT`（不一致说明 compose
+   重建覆盖了手工镜像，见第三节「构建」条目）。
+10. 各渠道逐一实测（不只测一个）：至少覆盖 `dsfgo`、`glm-whz-*`、`gpt-whz-*`、
+    `glm-aaa`、`gemini-4-argon-*`，确认全 200。**注意区分真实故障与已知的
+   账户/地区问题**：`gemini-4-argon-high` 的 503 是 Google 账户 ToS 封禁，
+    `gemini-4-argon-aistudio` 的 403 `Region not supported` 是出口地区问题，
+   二者都不是升级引入的回归。
+11. 上游新增路由按需放行：`/v1/tunnel`（WebSocket）。若入口 nginx 有限流规则，
+   确认它不会被误拦或误限。
 
 ## 面板 v8 适配补丁（2026-11-07，static/management.html 两处中文件改动）
 
