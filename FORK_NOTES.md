@@ -79,6 +79,57 @@ fork 侧补丁**，否则会留下两套机制互相打架。v8.0.69 的实例�
 - 旧版本的「禁用」是往 `excluded-models` 追加 `*`；开启时 `withoutLegacyDisablePattern`
   会清掉这个遗留标记，真实模型 id 保留。
 
+## 二之二、openai-compatibility 上游的思考强度（2026-11-13 实测）
+
+**问题**：本机反代上游（`aistudio-web` → AIStudio2API）挂了 `gemini-4-argon`。客户端若走
+Anthropic 协议（`/v1/messages`），CPA 转译为 OpenAI 兼容请求时**会丢弃 `thinking` 参数**，
+上游回落到自身默认思考档；而 `gemini-4-argon` 的上游默认是 `medium`，该档**不产生任何思考**
+（表现为秒回、无思考链）。
+
+**实测数据**（同一提示词）：
+
+| 入口协议 | 请求参数 | reasoning_tokens | 耗时 |
+|---|---|---|---|
+| Anthropic `/v1/messages` | `thinking.enabled(budget=4000)` | **0** | 8s |
+| Anthropic `/v1/messages` | 无 thinking | **0** | 8s |
+| OpenAI `/v1/chat/completions` | `reasoning_effort=high` | ~1020 | 23s |
+| OpenAI + 模型名带 `(high)` | 无需额外参数 | ~1009 | 26s |
+
+补充：`gemini-4-argon` 的 `low` / `medium` 档上游均**不产生思考**（rt=0），只有 `high` 真思考。
+`gemini-4-hydrogen` 四档（low/medium/high/xhigh）都有效，行为与 argon 不同。
+
+**解法**：把括号后缀写在 `openai-compatibility` 的**上游 `name`** 上，客户端继续用 alias 原名：
+
+```yaml
+- name: aistudio-web
+  base-url: "http://aistudio2api:2048/v1"
+  models:
+    # 括号在 name 上：CPA 路由前剥掉括号并按档位注入 reasoning_effort
+    - name: "gemini-4-argon(high)"
+      alias: "gemini-4-argon-aistudio"        # 客户端/DSH 里用的仍是这个名字
+    - name: "gemini-4-hydrogen"
+      alias: "gemini-4-hydrogen-aistudio"
+```
+
+**要点**：
+1. `internal/thinking/suffix.go` 的括号解析对 `openai-compatibility` 上游同样生效，
+   不限于 OAuth 通道——官方文档只描述了客户端侧用法，未提上游 `name` 侧。
+2. 上游 `name` 带括号后，`/v1/models` 里出现的是 `alias`，客户端无感知。
+3. 反代侧（AIStudio2API）收到的是剥括号后的 `gemini-4-argon` + `reasoning_effort: high`。
+4. 需要多档时每档配一条 alias，例如 `gemini-4-argon(low)` → `gemini-4-argon-aistudio-low`。
+
+**验证方法**（不经 DSH，直接打 CPA）：
+
+```bash
+curl -s http://127.0.0.1:3003/v1/messages \
+  -H "x-api-key: $CPA_API_KEY" -H 'anthropic-version: 2023-06-01' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gemini-4-argon-aistudio","max_tokens":4000,
+       "messages":[{"role":"user","content":"简要分析一个概率问题"}]}' \
+| jq '.usage, [.content[] | select(.type=="thinking")] | length'
+```
+期望：`output_tokens` 显著大于 0 且 thinking 块数 ≥ 1。
+
 ## 三、源码改动分区（相对上游累计 ~2.8k 行）
 
 ### 网关扩展（本 fork 存在的主因）
