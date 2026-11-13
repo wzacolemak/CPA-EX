@@ -29,7 +29,6 @@ import (
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
@@ -623,24 +622,6 @@ func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
 	return newTestServerWithConfig(t, cfg, opts...)
 }
 
-// discardRequestLogger is a RequestLogger that persists nothing. The default
-// factory writes a forced error log for every response with status >= 400 even
-// when request logging is disabled, and that write lands in auth-dir/logs,
-// which sits inside the test's t.TempDir. A test whose last response is an
-// error therefore races the TempDir cleanup ("directory not empty"). Tests that
-// assert on log files install their own logger through WithRequestLoggerFactory.
-type discardRequestLogger struct{}
-
-func (discardRequestLogger) LogRequest(string, string, map[string][]string, []byte, int, map[string][]string, []byte, []byte, []byte, []byte, []byte, []*interfaces.ErrorMessage, string, time.Time, time.Time) error {
-	return nil
-}
-
-func (discardRequestLogger) LogStreamingRequest(string, string, map[string][]string, []byte, string) (internallogging.StreamingLogWriter, error) {
-	return &internallogging.NoOpStreamingLogWriter{}, nil
-}
-
-func (discardRequestLogger) IsEnabled() bool { return false }
-
 func newTestServerWithConfig(t *testing.T, cfg *proxyconfig.Config, opts ...ServerOption) *Server {
 	t.Helper()
 
@@ -660,10 +641,6 @@ func newTestServerWithConfig(t *testing.T, cfg *proxyconfig.Config, opts ...Serv
 
 	authManager := auth.NewManager(nil, nil, nil)
 	accessManager := sdkaccess.NewManager()
-
-	opts = append([]ServerOption{WithRequestLoggerFactory(func(*proxyconfig.Config, string) internallogging.RequestLogger {
-		return discardRequestLogger{}
-	})}, opts...)
 
 	configPath := filepath.Join(tmpDir, "config.yaml")
 	return NewServer(cfg, authManager, accessManager, configPath, opts...)
@@ -3929,7 +3906,18 @@ func (e *serverResponsesWebsocketCaptureExecutor) HttpRequest(context.Context, *
 }
 
 func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
-	server := newTestServer(t)
+	for _, requestLog := range []bool{false, true} {
+		t.Run(fmt.Sprintf("request_log=%t", requestLog), func(t *testing.T) {
+			testServerResponsesWebsocketReauthorizesEachTurn(t, requestLog)
+		})
+	}
+}
+
+func testServerResponsesWebsocketReauthorizesEachTurn(t *testing.T, requestLog bool) {
+	t.Helper()
+	server := newTestServerWithConfig(t, &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{RequestLog: requestLog},
+	})
 	provider := &revocableServerAccessProvider{}
 	server.accessManager.SetProviders([]sdkaccess.Provider{provider})
 
@@ -3950,8 +3938,17 @@ func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
 		registry.GetGlobalRegistry().UnregisterClient(authEntry.ID)
 	})
 
-	httpServer := httptest.NewServer(server.engine)
-	defer httpServer.Close()
+	var requests sync.WaitGroup
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		defer requests.Done()
+		server.engine.ServeHTTP(w, r)
+	}))
+	defer func() {
+		httpServer.Close()
+		// Close does not wait for hijacked WebSocket handlers or their logging middleware.
+		requests.Wait()
+	}()
 
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/v1/responses"
 	headers := http.Header{"Authorization": []string{"Bearer key-1"}}
@@ -3959,7 +3956,11 @@ func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
 	if errDial != nil {
 		t.Fatalf("dial websocket: %v", errDial)
 	}
-	defer func() { _ = conn.Close() }()
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Errorf("close websocket: %v", errClose)
+		}
+	}()
 
 	turn1 := []byte(`{"type":"response.create","model":"ws-reauth-model","input":[{"type":"message","role":"user","content":"turn 1"}]}`)
 	if errWrite := conn.WriteMessage(websocket.TextMessage, turn1); errWrite != nil {
@@ -4010,4 +4011,23 @@ func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
 	if gotCalls := wsExec.calls.Load(); gotCalls != 1 {
 		t.Fatalf("executor calls after revoked turn = %d, want 1", gotCalls)
 	}
+	t.Cleanup(func() {
+		// Deferred connection shutdown and request draining must finish before inspecting logs.
+		entries, errReadDir := os.ReadDir(filepath.Join(server.cfg.AuthDir, "logs"))
+		if errReadDir != nil {
+			t.Fatalf("read request logs: %v", errReadDir)
+		}
+		var logCount int
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".tmp") || strings.HasPrefix(entry.Name(), "request-log-parts-") {
+				t.Errorf("request log temporary entry remains after handler completion: %s", entry.Name())
+			}
+			if strings.HasSuffix(entry.Name(), ".log") {
+				logCount++
+			}
+		}
+		if logCount == 0 {
+			t.Error("expected a completed request log for the revoked credential")
+		}
+	})
 }
