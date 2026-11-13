@@ -370,7 +370,60 @@ func newTestWebRTCAPI(t *testing.T) *webrtc.API {
 	return webrtc.NewAPI(
 		webrtc.WithMediaEngine(mediaEngine),
 		webrtc.WithInterceptorRegistry(interceptorRegistry),
+		webrtc.WithSettingEngine(testSettingEngine(t)),
 	)
+}
+
+// testSettingEngine pins the media engine's ICE candidates to one address.
+//
+// Pion gathers a host candidate per routable interface. A CI host or a build box
+// that runs many Docker networks exposes dozens of bridge addresses, so two
+// peers offer dozens of candidates each and the connectivity checks no longer
+// settle inside the timeouts these tests allow: measured on a host with 27
+// interfaces, all-interface gathering needed ~8.1s to reach connected, while a
+// single-interface pair connected in ~0.1s. The relay itself is unaffected -
+// production picks a PublicIP, a UDP port range, or a real ICE server - so only
+// the test peers are constrained here.
+func testSettingEngine(t *testing.T) webrtc.SettingEngine {
+	t.Helper()
+	settingEngine := webrtc.SettingEngine{}
+	settingEngine.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+	if ip := firstRoutableIPv4(t); ip != nil {
+		settingEngine.SetIPFilter(func(candidate net.IP) bool {
+			return candidate != nil && candidate.Equal(ip)
+		})
+		settingEngine.SetNAT1To1IPs([]string{ip.String()}, webrtc.ICECandidateTypeHost)
+	}
+	return settingEngine
+}
+
+// firstRoutableIPv4 returns the first non-loopback IPv4 address of an up
+// interface, so the test peers still exercise real UDP sockets.
+func firstRoutableIPv4(t *testing.T) net.IP {
+	t.Helper()
+	interfaces, errInterfaces := net.Interfaces()
+	if errInterfaces != nil {
+		t.Fatalf("list interfaces: %v", errInterfaces)
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, errAddrs := iface.Addrs()
+		if errAddrs != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok || ipNet.IP.IsLoopback() {
+				continue
+			}
+			if ipv4 := ipNet.IP.To4(); ipv4 != nil {
+				return ipv4
+			}
+		}
+	}
+	return nil
 }
 
 func completeOffer(t *testing.T, connection *webrtc.PeerConnection) string {
